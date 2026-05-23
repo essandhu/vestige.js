@@ -1,0 +1,57 @@
+{
+  "name": "vestige.js",
+  "version": "0.0.0",
+  "description": "Zero-dependency, TypeScript-first multi-object tracking library (SORT, ByteTrack, OC-SORT, BoT-SORT) for browser and Node.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./geometry": {
+      "types": "./dist/geometry/index.d.ts",
+      "import": "./dist/geometry/index.js",
+      "require": "./dist/geometry/index.cjs"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "object-tracking",
+    "multi-object-tracking",
+    "mot",
+    "tracking",
+    "bytetrack",
+    "sort",
+    "ocsort",
+    "botsort",
+    "computer-vision",
+    "typescript",
+    "browser"
+  ],
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "tsup": "^8.3.0",
+    "vitest": "^2.1.0",
+    "fast-check": "^3.22.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@vestige.js/eval",
+  "version": "0.0.0",
+  "private": true,
+  "description": "MOTChallenge evaluation harness for vestige.js. Node-only; not published.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "test": "echo 'eval tests TBD' && exit 0",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vestige.js": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
