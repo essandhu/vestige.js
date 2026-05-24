@@ -1,14 +1,14 @@
-import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
+import { describe, expect, it } from 'vitest';
 import {
-  xyxyToXywh,
-  xywhToXyxy,
-  xyxyToCxcywh,
-  cxcywhToXyxy,
-  xyxyToXyah,
-  xyahToXyxy,
   bboxArea,
   clipBBox,
+  cxcywhToXyxy,
+  xyahToXyxy,
+  xywhToXyxy,
+  xyxyToCxcywh,
+  xyxyToXyah,
+  xyxyToXywh,
 } from '../../src/geometry/bbox.js';
 
 /**
@@ -70,7 +70,9 @@ describe('bboxArea invariants', () => {
           fc.float({ noNaN: true, noDefaultInfinity: true }),
         ),
         (b) => {
-          expect(bboxArea(b as unknown as readonly [number, number, number, number])).toBeGreaterThanOrEqual(0);
+          expect(
+            bboxArea(b as unknown as readonly [number, number, number, number]),
+          ).toBeGreaterThanOrEqual(0);
         },
       ),
     );

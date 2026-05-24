@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { iou, giou, iouMatrix, giouMatrix } from '../../src/geometry/iou.js';
+import { describe, expect, it } from 'vitest';
+import { giou, giouMatrix, iou, iouMatrix } from '../../src/geometry/iou.js';
 import type { BBox } from '../../src/types.js';
 
 describe('iou', () => {
@@ -55,10 +55,22 @@ describe('giou', () => {
 
   it('is never greater than IoU', () => {
     const cases: Array<[BBox, BBox]> = [
-      [[0, 0, 10, 10], [5, 5, 15, 15]],
-      [[0, 0, 10, 10], [20, 0, 30, 10]],
-      [[0, 0, 10, 10], [2, 2, 8, 8]],
-      [[0, 0, 100, 50], [10, 10, 20, 40]],
+      [
+        [0, 0, 10, 10],
+        [5, 5, 15, 15],
+      ],
+      [
+        [0, 0, 10, 10],
+        [20, 0, 30, 10],
+      ],
+      [
+        [0, 0, 10, 10],
+        [2, 2, 8, 8],
+      ],
+      [
+        [0, 0, 100, 50],
+        [10, 10, 20, 40],
+      ],
     ];
     for (const [a, b] of cases) {
       expect(giou(a, b)).toBeLessThanOrEqual(iou(a, b) + 1e-12);

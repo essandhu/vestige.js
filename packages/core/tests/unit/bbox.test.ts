@@ -1,13 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  xyxyToXywh,
-  xywhToXyxy,
-  xyxyToCxcywh,
-  cxcywhToXyxy,
-  xyxyToXyah,
-  xyahToXyxy,
   bboxArea,
   clipBBox,
+  cxcywhToXyxy,
+  xyahToXyxy,
+  xywhToXyxy,
+  xyxyToCxcywh,
+  xyxyToXyah,
+  xyxyToXywh,
 } from '../../src/geometry/bbox.js';
 
 const APPROX = 1e-9;

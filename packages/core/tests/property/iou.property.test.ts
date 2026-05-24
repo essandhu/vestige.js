@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
 import fc from 'fast-check';
-import { iou, giou, iouMatrix } from '../../src/geometry/iou.js';
+import { describe, expect, it } from 'vitest';
+import { giou, iou, iouMatrix } from '../../src/geometry/iou.js';
 import type { BBox } from '../../src/types.js';
 
 const positiveBBox = fc

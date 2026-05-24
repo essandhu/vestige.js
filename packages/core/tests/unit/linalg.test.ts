@@ -1,13 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
-  matMul,
-  transpose,
-  matVec,
-  outerProduct,
   addInPlace,
-  subInPlace,
   cholesky,
   choleskySolve,
+  matMul,
+  matVec,
+  outerProduct,
+  subInPlace,
+  transpose,
 } from '../../src/geometry/linalg.js';
 
 function f(...xs: number[]): Float64Array {
