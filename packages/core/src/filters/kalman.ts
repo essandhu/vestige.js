@@ -1,3 +1,18 @@
+// biome-ignore-all lint/style/noNonNullAssertion: indices in the inner KF loops
+// are bounded by stateDim / measDim and the input array lengths. Asserting at
+// each read avoids `number | undefined` from `noUncheckedIndexedAccess` in
+// tight numerical loops without runtime cost.
+
+import {
+  addInPlace,
+  cholesky,
+  choleskySolve,
+  matMul,
+  matVec,
+  subInPlace,
+  transpose,
+} from '../geometry/linalg.js';
+
 /**
  * Generic linear Kalman filter over a pluggable {@link MotionModel}.
  * See ARCHITECTURE.md §5.5 for the design and §5.3 for the numerical-stability
@@ -99,8 +114,16 @@ export class KalmanFilter {
    * One predict step: `x' = F x`, `P' = F P Fᵀ + Q(x)`.
    * Returns a fresh {@link KalmanState}; the input is not mutated.
    */
-  predict(_state: KalmanState): KalmanState {
-    throw new Error('KalmanFilter.predict: not implemented');
+  predict(state: KalmanState): KalmanState {
+    const { F, stateDim } = this.model;
+    const Q = this.model.processNoise(state.mean);
+    const newMean = matVec(F, state.mean, stateDim, stateDim);
+    const FP = matMul(F, state.covariance, stateDim, stateDim, stateDim);
+    const Ft = transpose(F, stateDim, stateDim);
+    const newCov = matMul(FP, Ft, stateDim, stateDim, stateDim);
+    addInPlace(newCov, Q);
+
+    return { mean: newMean, covariance: newCov };
   }
 
   /**
@@ -111,8 +134,37 @@ export class KalmanFilter {
    * @param state previous state (typically post-predict)
    * @param measurement length `model.measDim`
    */
-  update(_state: KalmanState, _measurement: Float64Array): KalmanState {
-    throw new Error('KalmanFilter.update: not implemented');
+  update(state: KalmanState, measurement: Float64Array): KalmanState {
+    const { H, stateDim, measDim } = this.model;
+    const proj = this.project(state);
+
+    // Kalman gain K = P Hᵀ S⁻¹.  Solve S Kᵀ = H P column-by-column via Cholesky.
+    const HP = matMul(H, state.covariance, measDim, stateDim, stateDim);
+    const L = cholesky(proj.covariance, measDim);
+    const K = new Float64Array(stateDim * measDim);
+    const colBuf = new Float64Array(measDim);
+    for (let j = 0; j < stateDim; j++) {
+      for (let i = 0; i < measDim; i++) colBuf[i] = HP[i * stateDim + j]!;
+      const x = choleskySolve(L, colBuf, measDim);
+      for (let i = 0; i < measDim; i++) K[j * measDim + i] = x[i]!;
+    }
+
+    const innovation = new Float64Array(measDim);
+    for (let i = 0; i < measDim; i++) innovation[i] = measurement[i]! - proj.mean[i]!;
+
+    const Ky = matVec(K, innovation, stateDim, measDim);
+    const newMean = new Float64Array(state.mean);
+    addInPlace(newMean, Ky);
+
+    // P_post = P - K S Kᵀ — algebraically the same as the textbook (I - K H) P
+    // form, but kept in K-and-S terms so we don't pay an extra H P round-trip.
+    const KS = matMul(K, proj.covariance, stateDim, measDim, measDim);
+    const Kt = transpose(K, stateDim, measDim);
+    const KSKt = matMul(KS, Kt, stateDim, measDim, stateDim);
+    const newCov = new Float64Array(state.covariance);
+    subInPlace(newCov, KSKt);
+
+    return { mean: newMean, covariance: newCov };
   }
 
   /**
@@ -120,7 +172,15 @@ export class KalmanFilter {
    * Exposed publicly for association-time gating (Mahalanobis distance) and as
    * an introspection hook for tests.
    */
-  project(_state: KalmanState): ProjectedState {
-    throw new Error('KalmanFilter.project: not implemented');
+  project(state: KalmanState): ProjectedState {
+    const { H, stateDim, measDim } = this.model;
+    const R = this.model.measurementNoise(state.mean);
+    const projMean = matVec(H, state.mean, measDim, stateDim);
+    const HP = matMul(H, state.covariance, measDim, stateDim, stateDim);
+    const Ht = transpose(H, measDim, stateDim);
+    const projCov = matMul(HP, Ht, measDim, stateDim, measDim);
+    addInPlace(projCov, R);
+
+    return { mean: projMean, covariance: projCov };
   }
 }

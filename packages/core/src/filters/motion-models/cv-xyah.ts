@@ -1,3 +1,7 @@
+// biome-ignore-all lint/style/noNonNullAssertion: measurement / state buffers
+// are bounded by the model's measDim / stateDim contract; non-null asserting
+// the fixed-offset reads is cheaper than a guard on each access.
+
 import type { KalmanState, MotionModel } from '../kalman.js';
 
 /**
@@ -57,16 +61,47 @@ export class CvXyahMotionModel implements MotionModel {
   readonly stdWeightPosition: number;
   readonly stdWeightVelocity: number;
 
-  constructor(_options?: CvXyahOptions) {
-    throw new Error('CvXyahMotionModel: not implemented');
+  constructor(options?: CvXyahOptions) {
+    this.stdWeightPosition = options?.stdWeightPosition ?? 1 / 20;
+    this.stdWeightVelocity = options?.stdWeightVelocity ?? 1 / 160;
+
+    const F = new Float64Array(64);
+    for (let i = 0; i < 8; i++) F[i * 8 + i] = 1;
+    for (let i = 0; i < 4; i++) F[i * 8 + (i + 4)] = 1;
+    this.F = F;
+
+    const H = new Float64Array(32);
+    for (let i = 0; i < 4; i++) H[i * 8 + i] = 1;
+    this.H = H;
   }
 
-  processNoise(_stateMean: Float64Array): Float64Array {
-    throw new Error('CvXyahMotionModel.processNoise: not implemented');
+  processNoise(stateMean: Float64Array): Float64Array {
+    const h = stateMean[3]!;
+    const sp = this.stdWeightPosition * h;
+    const sv = this.stdWeightVelocity * h;
+    const m = new Float64Array(64);
+    m[0] = sp * sp;
+    m[9] = sp * sp;
+    m[18] = 1e-4;
+    m[27] = sp * sp;
+    m[36] = sv * sv;
+    m[45] = sv * sv;
+    m[54] = 1e-10;
+    m[63] = sv * sv;
+
+    return m;
   }
 
-  measurementNoise(_stateMean: Float64Array): Float64Array {
-    throw new Error('CvXyahMotionModel.measurementNoise: not implemented');
+  measurementNoise(stateMean: Float64Array): Float64Array {
+    const h = stateMean[3]!;
+    const sp = this.stdWeightPosition * h;
+    const m = new Float64Array(16);
+    m[0] = sp * sp;
+    m[5] = sp * sp;
+    m[10] = 1e-2;
+    m[15] = sp * sp;
+
+    return m;
   }
 
   /**
@@ -74,7 +109,29 @@ export class CvXyahMotionModel implements MotionModel {
    * at zero; initial covariance is the diagonal `diag(stdInit²)` from the
    * class docstring above.
    */
-  init(_measurement: Float64Array): KalmanState {
-    throw new Error('CvXyahMotionModel.init: not implemented');
+  init(measurement: Float64Array): KalmanState {
+    const h = measurement[3]!;
+    const sp = this.stdWeightPosition * h;
+    const sv = this.stdWeightVelocity * h;
+
+    const mean = new Float64Array(8);
+    mean[0] = measurement[0]!;
+    mean[1] = measurement[1]!;
+    mean[2] = measurement[2]!;
+    mean[3] = measurement[3]!;
+
+    const covariance = new Float64Array(64);
+    const stdPos = 2 * sp;
+    const stdVel = 10 * sv;
+    covariance[0] = stdPos * stdPos;
+    covariance[9] = stdPos * stdPos;
+    covariance[18] = 1e-4;
+    covariance[27] = stdPos * stdPos;
+    covariance[36] = stdVel * stdVel;
+    covariance[45] = stdVel * stdVel;
+    covariance[54] = 1e-10;
+    covariance[63] = stdVel * stdVel;
+
+    return { mean, covariance };
   }
 }

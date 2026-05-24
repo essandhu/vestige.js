@@ -1,3 +1,7 @@
+// biome-ignore-all lint/style/noNonNullAssertion: measurement / state buffers
+// are bounded by the model's measDim / stateDim contract; non-null asserting
+// the fixed-offset reads is cheaper than a guard on each access.
+
 import type { KalmanState, MotionModel } from '../kalman.js';
 
 /**
@@ -31,16 +35,33 @@ export class CvBBoxMotionModel implements MotionModel {
   readonly F: Float64Array;
   readonly H: Float64Array;
 
+  private readonly _Q: Float64Array;
+  private readonly _R: Float64Array;
+  private readonly _initCov: Float64Array;
+
   constructor() {
-    throw new Error('CvBBoxMotionModel: not implemented');
+    const F = new Float64Array(49);
+    for (let i = 0; i < 7; i++) F[i * 7 + i] = 1;
+    F[0 * 7 + 4] = 1;
+    F[1 * 7 + 5] = 1;
+    F[2 * 7 + 6] = 1;
+    this.F = F;
+
+    const H = new Float64Array(28);
+    for (let i = 0; i < 4; i++) H[i * 7 + i] = 1;
+    this.H = H;
+
+    this._Q = diag7(1, 1, 1, 1, 1e-2, 1e-2, 1e-4);
+    this._R = diag4(1, 1, 10, 10);
+    this._initCov = diag7(10, 10, 10, 10, 1e4, 1e4, 1e4);
   }
 
   processNoise(_stateMean: Float64Array): Float64Array {
-    throw new Error('CvBBoxMotionModel.processNoise: not implemented');
+    return this._Q;
   }
 
   measurementNoise(_stateMean: Float64Array): Float64Array {
-    throw new Error('CvBBoxMotionModel.measurementNoise: not implemented');
+    return this._R;
   }
 
   /**
@@ -48,8 +69,14 @@ export class CvBBoxMotionModel implements MotionModel {
    * at zero; initial covariance puts large uncertainty on the velocity block
    * so the first few updates can move the estimate freely.
    */
-  init(_measurement: Float64Array): KalmanState {
-    throw new Error('CvBBoxMotionModel.init: not implemented');
+  init(measurement: Float64Array): KalmanState {
+    const mean = new Float64Array(7);
+    mean[0] = measurement[0]!;
+    mean[1] = measurement[1]!;
+    mean[2] = measurement[2]!;
+    mean[3] = measurement[3]!;
+
+    return { mean, covariance: new Float64Array(this._initCov) };
   }
 }
 
@@ -61,17 +88,62 @@ export class CvBBoxMotionModel implements MotionModel {
  * callers filter degenerate boxes upstream, matching the rest of the geometry
  * module's contract (CONTRIBUTING.md §3.3).
  */
-export function xyxyToXysr(_bbox: readonly [number, number, number, number]): Float64Array {
-  throw new Error('xyxyToXysr: not implemented');
+export function xyxyToXysr(bbox: readonly [number, number, number, number]): Float64Array {
+  const [x1, y1, x2, y2] = bbox;
+  const w = x2 - x1;
+  const h = y2 - y1;
+
+  return new Float64Array([x1 + w / 2, y1 + h / 2, w * h, w / h]);
 }
 
 /**
  * Inverse of {@link xyxyToXysr}: convert `[cx, cy, s, r]` back into
  * `[x1, y1, x2, y2]`. Width is recovered as `sqrt(s * r)` and height as
- * `sqrt(s / r)`. Both `s` and `r` must be positive; negative `s` from a
- * runaway Kalman state is treated as zero (returns a degenerate box at the
- * center), matching abewley/sort's `convert_x_to_bbox`.
+ * `s / w`. Negative or zero `s` from a runaway Kalman state collapses to a
+ * degenerate box at the center — this is a defensive extension over
+ * abewley/sort's `convert_x_to_bbox`, which propagates NaN for `s < 0`.
  */
-export function xysrToXyxy(_state: Float64Array): [number, number, number, number] {
-  throw new Error('xysrToXyxy: not implemented');
+export function xysrToXyxy(state: Float64Array): [number, number, number, number] {
+  const cx = state[0]!;
+  const cy = state[1]!;
+  const s = state[2]!;
+  const r = state[3]!;
+  if (s <= 0) return [cx, cy, cx, cy];
+  const w = Math.sqrt(s * r);
+  const h = s / w;
+  const halfW = w / 2;
+  const halfH = h / 2;
+
+  return [cx - halfW, cy - halfH, cx + halfW, cy + halfH];
+}
+
+function diag7(
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  e: number,
+  f: number,
+  g: number,
+): Float64Array {
+  const m = new Float64Array(49);
+  m[0] = a;
+  m[8] = b;
+  m[16] = c;
+  m[24] = d;
+  m[32] = e;
+  m[40] = f;
+  m[48] = g;
+
+  return m;
+}
+
+function diag4(a: number, b: number, c: number, d: number): Float64Array {
+  const m = new Float64Array(16);
+  m[0] = a;
+  m[5] = b;
+  m[10] = c;
+  m[15] = d;
+
+  return m;
 }
