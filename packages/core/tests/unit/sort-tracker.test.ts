@@ -136,15 +136,13 @@ describe('SortTracker — two non-overlapping detections stay distinct', () => {
 describe('SortTracker — iouThreshold gating', () => {
   it('does not match a detection whose IoU with every track is below the threshold', () => {
     const t = new SortTracker({ iouThreshold: 0.5, minHits: 1, maxAge: 30 });
-    // Frame 1: spawn a track at (0, 0, 100, 100).
+    // Frame 1: spawn confirmed track id=1 at (0, 0, 100, 100) (minHits=1).
     t.update([det([0, 0, 100, 100])]);
-    // Frame 2: detection at (200, 200, 300, 300) — zero IoU with the track.
+    // Frame 2: zero-IoU detection. Track 1 misses → lost (not output, tsu=1).
+    // The unmatched detection spawns a NEW track id=2, confirmed under minHits=1.
     const out = t.update([det([200, 200, 300, 300])]);
-    // The old track loses its match (→ lost) and a NEW track is spawned for
-    // the new detection. The new one is tentative (won't appear in output
-    // because warmup already passed), so the result depends on whether the
-    // old confirmed track outputs. It missed → tsu=1 → not output.
-    expect(out).toHaveLength(0);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.id).toBe(2);
   });
 });
 

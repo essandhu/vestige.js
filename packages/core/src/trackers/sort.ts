@@ -1,4 +1,12 @@
-import type { Detection } from '../types.js';
+// biome-ignore-all lint/style/noNonNullAssertion: indices into the cost
+// matrix are bounded by the M*N rectangular contract; non-null asserting
+// the cost-matrix reads is cheaper than a guard on each access.
+
+import { KalmanFilter, type KalmanState } from '../filters/kalman.js';
+import { CvBBoxMotionModel, xysrToXyxy, xyxyToXysr } from '../filters/motion-models/cv-bbox.js';
+import { iouMatrix } from '../geometry/iou.js';
+import { solveLsap } from '../solvers/hungarian.js';
+import type { Detection, Track } from '../types.js';
 import { type AssociationResult, BaseTracker, type InternalTrack } from './base.js';
 
 /**
@@ -57,6 +65,7 @@ export interface SortTrackerOptions {
 export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   /** Resolved IoU threshold; cached so association doesn't read the options object per-pair. */
   readonly iouThreshold: number;
+  private readonly kalmanFilter: KalmanFilter;
 
   constructor(options: SortTrackerOptions = {}) {
     super({
@@ -64,24 +73,119 @@ export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
       maxAge: options.maxAge ?? 1,
     });
     this.iouThreshold = options.iouThreshold ?? 0.3;
+    this.kalmanFilter = new KalmanFilter(new CvBBoxMotionModel());
   }
 
-  protected predictTrack(_track: InternalTrack<TPayload>): void {
-    throw new Error('SortTracker.predictTrack: not implemented');
+  protected predictTrack(track: InternalTrack<TPayload>): void {
+    // abewley/sort safeguard (sort.py:KalmanBoxTracker.predict): if ṡ would
+    // drive scale to ≤ 0 on the next step, zero ṡ first. Keeps xysrToXyxy
+    // out of its degenerate-collapse branch under runaway velocity estimates.
+    const oldMean = track.kalmanState.mean;
+    let stateForPredict = track.kalmanState;
+    if (oldMean[2]! + oldMean[6]! <= 0) {
+      const corrected = new Float64Array(oldMean);
+      corrected[6] = 0;
+      stateForPredict = { mean: corrected, covariance: track.kalmanState.covariance };
+    }
+    const next = this.kalmanFilter.predict(stateForPredict);
+    track.kalmanState = next;
+    track.bbox = xysrToXyxy(next.mean);
   }
 
-  protected updateTrack(_track: InternalTrack<TPayload>, _detection: Detection<TPayload>): void {
-    throw new Error('SortTracker.updateTrack: not implemented');
+  protected updateTrack(track: InternalTrack<TPayload>, detection: Detection<TPayload>): void {
+    const measurement = xyxyToXysr(detection.bbox);
+    const updated = this.kalmanFilter.update(track.kalmanState, measurement);
+    track.kalmanState = updated;
+    track.bbox = xysrToXyxy(updated.mean);
+    track.lastDetection = detection;
   }
 
-  protected initTrack(_detection: Detection<TPayload>): InternalTrack<TPayload> {
-    throw new Error('SortTracker.initTrack: not implemented');
+  protected initTrack(detection: Detection<TPayload>): InternalTrack<TPayload> {
+    const measurement = xyxyToXysr(detection.bbox);
+    const kalmanState: KalmanState = this.kalmanFilter.model.init(measurement);
+    return {
+      id: 0,
+      state: 'tentative',
+      age: 0,
+      hits: 1,
+      hitStreak: 1,
+      timeSinceUpdate: 0,
+      kalmanState,
+      bbox: xysrToXyxy(kalmanState.mean),
+      lastDetection: detection,
+    };
   }
 
   protected associate(
-    _detections: ReadonlyArray<Detection<TPayload>>,
-    _associableTracks: ReadonlyArray<InternalTrack<TPayload>>,
+    detections: ReadonlyArray<Detection<TPayload>>,
+    associableTracks: ReadonlyArray<InternalTrack<TPayload>>,
   ): AssociationResult {
-    throw new Error('SortTracker.associate: not implemented');
+    const M = associableTracks.length;
+    const N = detections.length;
+    if (M === 0 || N === 0) {
+      return {
+        matched: [],
+        unmatchedTracks: associableTracks.map((_, i) => i),
+        unmatchedDetections: detections.map((_, i) => i),
+      };
+    }
+
+    const preds = associableTracks.map((t) => t.bbox);
+    const detBoxes = detections.map((d) => d.bbox);
+    const iou = iouMatrix(preds, detBoxes);
+
+    // Cost = 1 − IoU; gate pairs whose IoU is below threshold to +Infinity so
+    // the Hungarian solver never selects them (ARCHITECTURE.md §5.6).
+    const cost = new Float64Array(M * N);
+    for (let i = 0; i < M; i++) {
+      for (let j = 0; j < N; j++) {
+        const v = iou[i * N + j]!;
+        cost[i * N + j] = v < this.iouThreshold ? Number.POSITIVE_INFINITY : 1 - v;
+      }
+    }
+
+    const { rowToCol } = solveLsap(cost, M, N);
+    const matched: Array<[number, number]> = [];
+    const matchedTracks = new Uint8Array(M);
+    const matchedDets = new Uint8Array(N);
+    for (let i = 0; i < M; i++) {
+      const j = rowToCol[i]!;
+      if (j !== -1) {
+        matched.push([i, j]);
+        matchedTracks[i] = 1;
+        matchedDets[j] = 1;
+      }
+    }
+    const unmatchedTracks: number[] = [];
+    for (let i = 0; i < M; i++) if (matchedTracks[i] === 0) unmatchedTracks.push(i);
+    const unmatchedDetections: number[] = [];
+    for (let j = 0; j < N; j++) if (matchedDets[j] === 0) unmatchedDetections.push(j);
+
+    return { matched, unmatchedTracks, unmatchedDetections };
+  }
+
+  /**
+   * sort.py's observable export rule:
+   *
+   * ```python
+   * (time_since_update < 1) and (hit_streak >= min_hits or frame_count <= min_hits)
+   * ```
+   *
+   * In our explicit lifecycle: confirmed tracks matched this frame are always
+   * output; during the first `minHits` frames, *tentative* tracks matched
+   * this frame are also output (the "warmup" clause). This is what lets a
+   * detection appear in the very first frame's result without waiting
+   * `minHits` consecutive frames for confirmation.
+   */
+  protected override exportConfirmed(): Track<TPayload>[] {
+    const out: Track<TPayload>[] = [];
+    const warmup = this._frameIndex <= this.options.minHits;
+    for (const track of this.tracks.values()) {
+      if (track.timeSinceUpdate !== 0) continue;
+      if (track.state === 'confirmed' || (warmup && track.state === 'tentative')) {
+        out.push(this.materializeTrack(track));
+      }
+    }
+    return out;
   }
 }

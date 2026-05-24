@@ -125,8 +125,87 @@ export abstract class BaseTracker<TPayload = unknown> implements Tracker<TPayloa
    * Concrete; subclasses override the abstract motion + association hooks
    * rather than this method itself. See class docstring for the step ordering.
    */
-  update(_detections: ReadonlyArray<Detection<TPayload>>): Track<TPayload>[] {
-    throw new Error('BaseTracker.update: not implemented');
+  update(detections: ReadonlyArray<Detection<TPayload>>): Track<TPayload>[] {
+    this._frameIndex++;
+
+    // 1. Predict every existing track forward one frame. age++ here so that
+    //    tracks created later this frame (in step 4) correctly start at age 0.
+    for (const track of this.tracks.values()) {
+      this.predictTrack(track);
+      track.age++;
+    }
+
+    // 2. Snapshot the associable tracks. Tracks in the `removed` state would
+    //    already have been swept at the end of the previous frame, but the
+    //    explicit filter guards against subclasses that might inject state.
+    const associable: InternalTrack<TPayload>[] = [];
+    for (const track of this.tracks.values()) {
+      if (track.state !== 'removed') associable.push(track);
+    }
+
+    // 3. Associate predictions ↔ detections.
+    const { matched, unmatchedTracks, unmatchedDetections } = this.associate(
+      detections,
+      associable,
+    );
+
+    // 4a. Update matched tracks; a lost track that re-matches goes back to confirmed.
+    for (const [ti, di] of matched) {
+      const track = associable[ti];
+      const det = detections[di];
+      if (!track || !det) continue;
+      this.updateTrack(track, det);
+      track.hits++;
+      track.hitStreak++;
+      track.timeSinceUpdate = 0;
+      if (track.state === 'lost') track.state = 'confirmed';
+    }
+
+    // 4b. Mark unmatched tracks: hitStreak resets, timeSinceUpdate advances.
+    for (const ti of unmatchedTracks) {
+      const track = associable[ti];
+      if (!track) continue;
+      track.hitStreak = 0;
+      track.timeSinceUpdate++;
+    }
+
+    // 4c. Spawn a new tentative track per unmatched detection. IDs are assigned
+    //     here so that subclasses' initTrack doesn't need to know about nextId.
+    for (const di of unmatchedDetections) {
+      const det = detections[di];
+      if (!det) continue;
+      const fresh = this.initTrack(det);
+      fresh.id = this.nextId++;
+      this.tracks.set(fresh.id, fresh);
+    }
+
+    // 5. Advance lifecycle states. The checks chain (not `else if`) so that a
+    //    confirmed track that just missed on a frame with maxAge = 0 cascades
+    //    confirmed → lost → removed in a single pass — matching sort.py's
+    //    `if (trk.time_since_update > self.max_age): pop` semantics.
+    for (const track of this.tracks.values()) {
+      if (track.state === 'tentative') {
+        if (track.timeSinceUpdate > 0) {
+          track.state = 'removed';
+        } else if (track.hitStreak >= this.options.minHits) {
+          track.state = 'confirmed';
+        }
+      }
+      if (track.state === 'confirmed' && track.timeSinceUpdate > 0) {
+        track.state = 'lost';
+      }
+      if (track.state === 'lost' && track.timeSinceUpdate > this.options.maxAge) {
+        track.state = 'removed';
+      }
+    }
+
+    // 6. Sweep removed tracks out of the map.
+    for (const [id, track] of this.tracks) {
+      if (track.state === 'removed') this.tracks.delete(id);
+    }
+
+    // 7. Export.
+    return this.exportConfirmed();
   }
 
   /**
@@ -135,7 +214,11 @@ export abstract class BaseTracker<TPayload = unknown> implements Tracker<TPayloa
    * return value is the right shape for downstream rendering.
    */
   getActiveTracks(): Track<TPayload>[] {
-    throw new Error('BaseTracker.getActiveTracks: not implemented');
+    const out: Track<TPayload>[] = [];
+    for (const track of this.tracks.values()) {
+      if (track.state === 'confirmed') out.push(this.materializeTrack(track));
+    }
+    return out;
   }
 
   /**
@@ -143,12 +226,18 @@ export abstract class BaseTracker<TPayload = unknown> implements Tracker<TPayloa
    * unmatched, still within `maxAge`).
    */
   getLostTracks(): Track<TPayload>[] {
-    throw new Error('BaseTracker.getLostTracks: not implemented');
+    const out: Track<TPayload>[] = [];
+    for (const track of this.tracks.values()) {
+      if (track.state === 'lost') out.push(this.materializeTrack(track));
+    }
+    return out;
   }
 
   /** Clear every track, reset id counter to 1, reset frame counter to 0. */
   reset(): void {
-    throw new Error('BaseTracker.reset: not implemented');
+    this.tracks.clear();
+    this.nextId = 1;
+    this._frameIndex = 0;
   }
 
   /**
@@ -195,11 +284,29 @@ export abstract class BaseTracker<TPayload = unknown> implements Tracker<TPayloa
    * the first `minHits` frames).
    */
   protected exportConfirmed(): Track<TPayload>[] {
-    throw new Error('BaseTracker.exportConfirmed: not implemented');
+    const out: Track<TPayload>[] = [];
+    for (const track of this.tracks.values()) {
+      if (track.state === 'confirmed' && track.timeSinceUpdate === 0) {
+        out.push(this.materializeTrack(track));
+      }
+    }
+    return out;
   }
 
   /** Build a public {@link Track} from an {@link InternalTrack}. */
-  protected materializeTrack(_track: InternalTrack<TPayload>): Track<TPayload> {
-    throw new Error('BaseTracker.materializeTrack: not implemented');
+  protected materializeTrack(track: InternalTrack<TPayload>): Track<TPayload> {
+    const det = track.lastDetection;
+    const out: Track<TPayload> = {
+      bbox: track.bbox,
+      score: det.score,
+      id: track.id,
+      age: track.age,
+      hits: track.hits,
+      timeSinceUpdate: track.timeSinceUpdate,
+      state: track.state,
+    };
+    if (det.classId !== undefined) out.classId = det.classId;
+    if (det.payload !== undefined) out.payload = det.payload;
+    return out;
   }
 }
