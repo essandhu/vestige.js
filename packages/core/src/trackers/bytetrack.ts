@@ -1,6 +1,14 @@
+// biome-ignore-all lint/style/noNonNullAssertion: indices into cost / iou
+// matrices and id-keyed maps are bounded by the M*N rectangular contracts
+// and explicit Map.has guards; asserting at each read is cheaper than a
+// per-cell `number | undefined` narrowing in the per-frame hot path.
+
 import { KalmanFilter } from '../filters/kalman.js';
 import { CvXyahMotionModel } from '../filters/motion-models/cv-xyah.js';
-import type { Detection, Track } from '../types.js';
+import { xyahToXyxy, xyxyToXyah } from '../geometry/bbox.js';
+import { iouMatrix, iou as iouScalar } from '../geometry/iou.js';
+import { solveLsap } from '../solvers/hungarian.js';
+import type { BBox, Detection, Track } from '../types.js';
 import { type AssociationResult, BaseTracker, type InternalTrack } from './base.js';
 
 /**
@@ -19,10 +27,10 @@ import { type AssociationResult, BaseTracker, type InternalTrack } from './base.
  * See ARCHITECTURE.md §6.3 for the per-option semantics and §10.1 for the
  * acceptance window vs. published numbers.
  *
- * Three numeric constants are not exposed because the reference hard-codes
+ * Five numeric constants are not exposed because the reference hard-codes
  * them and varying them would diverge from the published algorithm:
  *
- * - **Low-score floor** `0.1`: detections below this are discarded entirely.
+ * - **Low-score floor** `0.1`: detections with `score ≤ 0.1` are discarded.
  * - **Stage-2 IoU-distance cutoff** `0.5`: low-score association threshold.
  * - **Stage-3 IoU-distance cutoff** `0.7`: unconfirmed-track association threshold.
  * - **`det_thresh = trackThresh + 0.1`**: minimum score to spawn a new track.
@@ -31,8 +39,10 @@ import { type AssociationResult, BaseTracker, type InternalTrack } from './base.
 export interface ByteTrackerOptions {
   /**
    * Detections strictly greater than this go into stage 1; detections in
-   * `(0.1, trackThresh]` go into stage 2; detections at or below `0.1` are
-   * dropped. Default 0.5.
+   * `(0.1, trackThresh)` go into stage 2; detections at or below `0.1` are
+   * dropped. Note: a detection with `score === trackThresh` exactly is
+   * dropped — the reference uses strict `<` and `>` comparisons against
+   * `trackThresh`, leaving the boundary uncovered. Default 0.5.
    */
   readonly trackThresh?: number;
   /**
@@ -65,6 +75,17 @@ export interface ByteTrackerOptions {
   readonly mot20?: boolean;
 }
 
+/** Hard-coded score floor; detections at or below this are discarded entirely. */
+const LOW_SCORE_FLOOR = 0.1;
+/** Hard-coded stage-2 IoU-distance cutoff (reference: `matching.linear_assignment(thresh=0.5)`). */
+const STAGE2_CUTOFF = 0.5;
+/** Hard-coded stage-3 IoU-distance cutoff (reference: `matching.linear_assignment(thresh=0.7)`). */
+const STAGE3_CUTOFF = 0.7;
+/** Hard-coded duplicate-IoU-distance cutoff (reference: `pdist < 0.15`). */
+const DUP_IOU_DISTANCE_CUTOFF = 0.15;
+/** Reference frame rate that `trackBuffer` is calibrated against. */
+const REFERENCE_FRAME_RATE = 30;
+
 /**
  * ByteTrack (Zhang, Sun, Jiang, Yu, Weng, Yuan, Luo, Liu, Wang —
  * ECCV 2022; arXiv:2110.06864). Three-stage association over the
@@ -78,7 +99,7 @@ export interface ByteTrackerOptions {
  *    against the union of currently-confirmed tracks and currently-lost tracks
  *    (`strack_pool`) using `1 − IoU` cost optionally weighted by
  *    `fuse_score`. Cutoff: `matchThresh` (default 0.8).
- * 2. **Stage 2** — low-score detections (`0.1 < score ≤ trackThresh`) are
+ * 2. **Stage 2** — low-score detections (`0.1 < score < trackThresh`) are
  *    matched against stage-1-unmatched **confirmed** tracks only (lost tracks
  *    excluded). Cutoff: 0.5 (hard-coded per the reference). `fuse_score` is
  *    not applied here.
@@ -105,12 +126,17 @@ export interface ByteTrackerOptions {
  * implemented for parity with the base class contract, but {@link associate}
  * is unused — three-stage matching is inlined into {@link update}.
  *
- * One intentional deviation from `byte_tracker.py`:
+ * Two intentional deviations from `byte_tracker.py`:
  *
  * - `Track.id` is assigned starting at 1 via the shared {@link BaseTracker}
  *   counter (`nextId`). The reference uses a class-level `BaseTrack._count`
  *   that persists across `BYTETracker` instances; vestige.js scopes the
  *   counter per-instance so {@link reset} returns to id=1.
+ * - vestige.js's lifecycle states are `tentative | confirmed | lost | removed`
+ *   (ARCHITECTURE.md §4.2); the reference splits this across
+ *   `state ∈ {New, Tracked, Lost, Removed}` plus the `is_activated` boolean.
+ *   The mapping is: `tentative ≡ Tracked && !is_activated`, `confirmed ≡
+ *   Tracked && is_activated`. Observable output is identical.
  */
 export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   /** Resolved `trackThresh`. Cached so the per-frame hot path doesn't read options. */
@@ -142,9 +168,9 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     const trackThresh = options.trackThresh ?? 0.5;
     const trackBuffer = options.trackBuffer ?? 30;
     const matchThresh = options.matchThresh ?? 0.8;
-    const frameRate = options.frameRate ?? 30;
+    const frameRate = options.frameRate ?? REFERENCE_FRAME_RATE;
     const mot20 = options.mot20 ?? false;
-    const maxAge = Math.floor((frameRate / 30) * trackBuffer);
+    const maxAge = Math.floor((frameRate / REFERENCE_FRAME_RATE) * trackBuffer);
 
     // ByteTrack confirms a track on its first match-after-spawn (frames > 1) or
     // immediately on frame 1; either way the "consecutive matches required"
@@ -168,8 +194,16 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    * (`STrack.predict: if state != Tracked: mean_state[7] = 0`), which keeps
    * the box from drifting vertically while the track is unobserved.
    */
-  protected predictTrack(_track: InternalTrack<TPayload>): void {
-    throw new Error('ByteTracker.predictTrack not implemented');
+  protected predictTrack(track: InternalTrack<TPayload>): void {
+    let stateForPredict = track.kalmanState;
+    if (track.state === 'lost') {
+      const corrected = new Float64Array(track.kalmanState.mean);
+      corrected[7] = 0;
+      stateForPredict = { mean: corrected, covariance: track.kalmanState.covariance };
+    }
+    const next = this.kalmanFilter.predict(stateForPredict);
+    track.kalmanState = next;
+    track.bbox = xyahToXyxy([next.mean[0]!, next.mean[1]!, next.mean[2]!, next.mean[3]!]);
   }
 
   /**
@@ -178,8 +212,17 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    * `track.bbox`, `track.kalmanState`, and `track.lastDetection` are all
    * refreshed in place.
    */
-  protected updateTrack(_track: InternalTrack<TPayload>, _detection: Detection<TPayload>): void {
-    throw new Error('ByteTracker.updateTrack not implemented');
+  protected updateTrack(track: InternalTrack<TPayload>, detection: Detection<TPayload>): void {
+    const measurement = Float64Array.from(xyxyToXyah(detection.bbox));
+    const updated = this.kalmanFilter.update(track.kalmanState, measurement);
+    track.kalmanState = updated;
+    track.bbox = xyahToXyxy([
+      updated.mean[0]!,
+      updated.mean[1]!,
+      updated.mean[2]!,
+      updated.mean[3]!,
+    ]);
+    track.lastDetection = detection;
   }
 
   /**
@@ -189,8 +232,25 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    * {@link BaseTracker.initTrack} JSDoc). Frame-1 promotion to `'confirmed'`
    * is handled in {@link update} after this method returns.
    */
-  protected initTrack(_detection: Detection<TPayload>): InternalTrack<TPayload> {
-    throw new Error('ByteTracker.initTrack not implemented');
+  protected initTrack(detection: Detection<TPayload>): InternalTrack<TPayload> {
+    const measurement = Float64Array.from(xyxyToXyah(detection.bbox));
+    const kalmanState = this.kalmanFilter.model.init(measurement);
+    return {
+      id: 0,
+      state: 'tentative',
+      age: 0,
+      hits: 0,
+      hitStreak: 0,
+      timeSinceUpdate: 0,
+      kalmanState,
+      bbox: xyahToXyxy([
+        kalmanState.mean[0]!,
+        kalmanState.mean[1]!,
+        kalmanState.mean[2]!,
+        kalmanState.mean[3]!,
+      ]),
+      lastDetection: detection,
+    };
   }
 
   /**
@@ -211,7 +271,248 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    * frame). See class docstring for the stage ordering and the lifecycle
    * deviations from {@link BaseTracker.update}.
    */
-  override update(_detections: ReadonlyArray<Detection<TPayload>>): Track<TPayload>[] {
-    throw new Error('ByteTracker.update not implemented');
+  override update(detections: ReadonlyArray<Detection<TPayload>>): Track<TPayload>[] {
+    this._frameIndex++;
+
+    // 1. Partition existing tracks. tentatives stay aside for stage 3;
+    //    strackPool (confirmed + lost) feeds stages 1 & 2 after a predict step.
+    const tentatives: InternalTrack<TPayload>[] = [];
+    const strackPool: InternalTrack<TPayload>[] = [];
+    for (const track of this.tracks.values()) {
+      if (track.state === 'tentative') tentatives.push(track);
+      else strackPool.push(track);
+    }
+
+    // 2. Predict confirmed + lost; age all surviving tracks (the spawn frame
+    //    is handled below — new tracks created this frame start at age 0).
+    for (const track of strackPool) {
+      this.predictTrack(track);
+      track.age++;
+    }
+    for (const track of tentatives) {
+      // Tentatives are not predicted (faithful to the reference's `multi_predict`
+      // running only on `strack_pool`). They still age.
+      track.age++;
+    }
+
+    // 3. Partition detections by score. Per the reference:
+    //      remain (high) = scores > trackThresh
+    //      second (low)  = (scores > LOW_SCORE_FLOOR) AND (scores < trackThresh)
+    //    Detections at scores ≤ LOW_SCORE_FLOOR or exactly == trackThresh
+    //    are discarded (the boundary is deliberately not covered by either bin).
+    const high: Detection<TPayload>[] = [];
+    const low: Detection<TPayload>[] = [];
+    for (const det of detections) {
+      if (det.score > this.trackThresh) high.push(det);
+      else if (det.score > LOW_SCORE_FLOOR && det.score < this.trackThresh) low.push(det);
+    }
+
+    // 4. Stage 1: high-score dets ↔ strackPool, optionally fuse_score-weighted.
+    const stage1 = matchByIou(
+      strackPool.map((t) => t.bbox),
+      high,
+      this.matchThresh,
+      !this.mot20,
+    );
+    for (const [ti, di] of stage1.matched) {
+      const track = strackPool[ti]!;
+      this.updateTrack(track, high[di]!);
+      track.hits++;
+      track.hitStreak++;
+      track.timeSinceUpdate = 0;
+      // A re-found lost track transitions back to confirmed (re_activate).
+      if (track.state === 'lost') track.state = 'confirmed';
+    }
+
+    // 5. Stage 2 pool: stage-1-unmatched but state==confirmed
+    //    (the reference excludes lost tracks from stage 2 explicitly).
+    const stage2Tracks: InternalTrack<TPayload>[] = [];
+    for (const ti of stage1.unmatchedTracks) {
+      const track = strackPool[ti]!;
+      if (track.state === 'confirmed') stage2Tracks.push(track);
+    }
+    const stage2 = matchByIou(
+      stage2Tracks.map((t) => t.bbox),
+      low,
+      STAGE2_CUTOFF,
+      false, // fuse_score not applied in stage 2 (matches the reference)
+    );
+    for (const [ti, di] of stage2.matched) {
+      const track = stage2Tracks[ti]!;
+      this.updateTrack(track, low[di]!);
+      track.hits++;
+      track.hitStreak++;
+      track.timeSinceUpdate = 0;
+    }
+    // Stage-2-unmatched confirmed tracks → lost.
+    for (const ti of stage2.unmatchedTracks) {
+      const track = stage2Tracks[ti]!;
+      track.state = 'lost';
+      track.hitStreak = 0;
+      track.timeSinceUpdate++;
+    }
+    // Stage-1-unmatched lost tracks stay lost; their tsu advances.
+    for (const ti of stage1.unmatchedTracks) {
+      const track = strackPool[ti]!;
+      if (track.state === 'lost') {
+        track.hitStreak = 0;
+        track.timeSinceUpdate++;
+      }
+    }
+
+    // 6. Stage 3: stage-1-unmatched HIGH dets ↔ tentative tracks.
+    const stage3Dets: Detection<TPayload>[] = [];
+    const stage3DetIndices: number[] = []; // back into `high`
+    for (const j of stage1.unmatchedDetections) {
+      stage3Dets.push(high[j]!);
+      stage3DetIndices.push(j);
+    }
+    const stage3 = matchByIou(
+      tentatives.map((t) => t.bbox),
+      stage3Dets,
+      STAGE3_CUTOFF,
+      !this.mot20,
+    );
+    for (const [ti, di] of stage3.matched) {
+      const track = tentatives[ti]!;
+      this.updateTrack(track, stage3Dets[di]!);
+      track.hits++;
+      track.hitStreak++;
+      track.timeSinceUpdate = 0;
+      // Tentative → confirmed (one-chance rule; first match after spawn confirms).
+      track.state = 'confirmed';
+    }
+    // Stage-3-unmatched tentatives → removed immediately (mark_removed in the reference).
+    for (const ti of stage3.unmatchedTracks) {
+      tentatives[ti]!.state = 'removed';
+    }
+
+    // 7. Spawn new tracks for stage-3-unmatched high-score dets above detThresh.
+    for (const j of stage3.unmatchedDetections) {
+      const det = stage3Dets[j]!;
+      if (det.score < this.detThresh) continue;
+      const fresh = this.initTrack(det);
+      fresh.id = this.nextId++;
+      // Frame-1 deviation: STrack.activate(frame_id=1) sets is_activated=True
+      // immediately, so the track is observable on its spawn frame. Frames 2+
+      // require a stage-3 match next frame before becoming confirmed.
+      if (this._frameIndex === 1) {
+        fresh.state = 'confirmed';
+        fresh.hits = 1;
+        fresh.hitStreak = 1;
+      }
+      this.tracks.set(fresh.id, fresh);
+    }
+
+    // 8. Reap lost tracks past max_time_lost.
+    for (const track of this.tracks.values()) {
+      if (track.state === 'lost' && track.timeSinceUpdate > this.maxAge) {
+        track.state = 'removed';
+      }
+    }
+
+    // 9. Sweep removed tracks out of the map.
+    for (const [id, track] of this.tracks) {
+      if (track.state === 'removed') this.tracks.delete(id);
+    }
+
+    // 10. Deduplicate near-identical confirmed/lost pairs. When the IoU between
+    //     a confirmed and a lost track exceeds 0.85 (i.e. iou_distance < 0.15),
+    //     remove the younger of the two — this prevents the lost retention from
+    //     spawning a phantom duplicate after a re-association. See the
+    //     reference's `remove_duplicate_stracks`.
+    this.removeDuplicates();
+
+    // 11. Export confirmed tracks matched this frame (default rule on
+    //     BaseTracker honors `state === 'confirmed' && timeSinceUpdate === 0`,
+    //     which matches ByteTrack's `is_activated` output filter).
+    return this.exportConfirmed();
   }
+
+  /**
+   * After-association dedup. Confirmed and lost tracks whose IoU exceeds 0.85
+   * are treated as duplicates; the younger one (smaller `age`) is removed.
+   * Ties prefer keeping the confirmed track over the lost one (consistent
+   * with the reference's `else: dupa.append(p)` branch, where `stracksa` is
+   * the confirmed list and `stracksb` the lost list — equal-time pairs see
+   * the confirmed entry dropped, but in practice equal-time pairs would mean
+   * two tracks spawned on the same frame, which the spawn logic doesn't
+   * produce).
+   */
+  private removeDuplicates(): void {
+    const confirmed: InternalTrack<TPayload>[] = [];
+    const lost: InternalTrack<TPayload>[] = [];
+    for (const track of this.tracks.values()) {
+      if (track.state === 'confirmed') confirmed.push(track);
+      else if (track.state === 'lost') lost.push(track);
+    }
+    if (confirmed.length === 0 || lost.length === 0) return;
+    for (const c of confirmed) {
+      for (const l of lost) {
+        // 1 − IoU < 0.15  ≡  IoU > 0.85.
+        if (1 - iouScalar(c.bbox, l.bbox) < DUP_IOU_DISTANCE_CUTOFF) {
+          // Younger = smaller age; in ties, drop the confirmed one (reference branch).
+          if (c.age > l.age) this.tracks.delete(l.id);
+          else this.tracks.delete(c.id);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * IoU-distance association between predicted-track bboxes and detections.
+ * Builds an M×N cost matrix where `cost[i, j] = 1 − IoU(tracks[i], dets[j])`
+ * (optionally weighted via `fuse_score`), gates cells whose cost exceeds
+ * `cutoff` to `+Infinity`, and runs Jonker-Volgenant assignment. Empty inputs
+ * return an all-unmatched result without invoking the solver.
+ *
+ * Hoisted to module scope to keep the per-frame hot path free of closures
+ * (CONTRIBUTING.md §3.4).
+ */
+function matchByIou<TPayload>(
+  trackBoxes: ReadonlyArray<BBox>,
+  detections: ReadonlyArray<Detection<TPayload>>,
+  cutoff: number,
+  applyFuseScore: boolean,
+): { matched: Array<[number, number]>; unmatchedTracks: number[]; unmatchedDetections: number[] } {
+  const M = trackBoxes.length;
+  const N = detections.length;
+  if (M === 0 || N === 0) {
+    return {
+      matched: [],
+      unmatchedTracks: trackBoxes.map((_, i) => i),
+      unmatchedDetections: detections.map((_, i) => i),
+    };
+  }
+  const detBoxes = detections.map((d) => d.bbox);
+  const iou = iouMatrix(trackBoxes, detBoxes);
+  const cost = new Float64Array(M * N);
+  for (let i = 0; i < M; i++) {
+    for (let j = 0; j < N; j++) {
+      let c = 1 - iou[i * N + j]!;
+      // fuse_score: cost' = 1 − (1 − cost) * det_score. Preserves the
+      // gating sentinel because `1 − Infinity * positive` underflows to
+      // `−Infinity`, and `1 − (−Infinity)` is `+Infinity` again.
+      if (applyFuseScore) c = 1 - (1 - c) * detections[j]!.score;
+      cost[i * N + j] = c > cutoff ? Number.POSITIVE_INFINITY : c;
+    }
+  }
+  const { rowToCol } = solveLsap(cost, M, N);
+  const matched: Array<[number, number]> = [];
+  const matchedTracks = new Uint8Array(M);
+  const matchedDets = new Uint8Array(N);
+  for (let i = 0; i < M; i++) {
+    const j = rowToCol[i]!;
+    if (j !== -1) {
+      matched.push([i, j]);
+      matchedTracks[i] = 1;
+      matchedDets[j] = 1;
+    }
+  }
+  const unmatchedTracks: number[] = [];
+  for (let i = 0; i < M; i++) if (matchedTracks[i] === 0) unmatchedTracks.push(i);
+  const unmatchedDetections: number[] = [];
+  for (let j = 0; j < N; j++) if (matchedDets[j] === 0) unmatchedDetections.push(j);
+  return { matched, unmatchedTracks, unmatchedDetections };
 }
