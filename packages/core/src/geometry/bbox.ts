@@ -3,29 +3,41 @@ import type { BBox } from '../types.js';
 /**
  * Convert `[x1, y1, x2, y2]` to `[x, y, w, h]` (top-left + size).
  */
-export function xyxyToXywh(_b: BBox): [number, number, number, number] {
-  throw new Error('not implemented');
+export function xyxyToXywh(b: BBox): [number, number, number, number] {
+  const [x1, y1, x2, y2] = b;
+
+  return [x1, y1, x2 - x1, y2 - y1];
 }
 
 /**
- * Inverse of {@link xyxyToXywh}.
+ * Convert `[x, y, w, h]` (top-left + size) to `[x1, y1, x2, y2]`.
+ * Exact inverse of {@link xyxyToXywh}.
  */
-export function xywhToXyxy(_b: BBox): [number, number, number, number] {
-  throw new Error('not implemented');
+export function xywhToXyxy(b: BBox): [number, number, number, number] {
+  const [x, y, w, h] = b;
+
+  return [x, y, w + x, h + y];
 }
 
 /**
  * Convert `[x1, y1, x2, y2]` to `[cx, cy, w, h]` (center + size).
  */
-export function xyxyToCxcywh(_b: BBox): [number, number, number, number] {
-  throw new Error('not implemented');
+export function xyxyToCxcywh(b: BBox): [number, number, number, number] {
+  const [x1, y1, x2, y2] = b;
+
+  return [(x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1];
 }
 
 /**
- * Inverse of {@link xyxyToCxcywh}.
+ * Convert `[cx, cy, w, h]` (center + size) to `[x1, y1, x2, y2]`.
+ * Exact inverse of {@link xyxyToCxcywh}.
  */
-export function cxcywhToXyxy(_b: BBox): [number, number, number, number] {
-  throw new Error('not implemented');
+export function cxcywhToXyxy(b: BBox): [number, number, number, number] {
+  const [cx, cy, w, h] = b;
+  const halfW = 0.5 * w;
+  const halfH = 0.5 * h;
+
+  return [cx - halfW, cy - halfH, cx + halfW, cy + halfH];
 }
 
 /**
@@ -34,22 +46,33 @@ export function cxcywhToXyxy(_b: BBox): [number, number, number, number] {
  *
  * Behavior at h == 0 is undefined (callers must filter degenerate boxes).
  */
-export function xyxyToXyah(_b: BBox): [number, number, number, number] {
-  throw new Error('not implemented');
+export function xyxyToXyah(b: BBox): [number, number, number, number] {
+  const [x1, y1, x2, y2] = b;
+
+  return [(x1 + x2) / 2, (y1 + y2) / 2, (x2 - x1) / (y2 - y1), y2 - y1];
 }
 
 /**
- * Inverse of {@link xyxyToXyah}.
+ * Convert `[cx, cy, a, h]` (center + aspect ratio + height) to `[x1, y1, x2, y2]`,
+ * where `a = w / h`. Inverse of {@link xyxyToXyah} up to floating-point error.
  */
-export function xyahToXyxy(_b: BBox): [number, number, number, number] {
-  throw new Error('not implemented');
+export function xyahToXyxy(b: BBox): [number, number, number, number] {
+  const [cx, cy, a, h] = b;
+  const halfW = 0.5 * a * h;
+  const halfH = 0.5 * h;
+
+  return [cx - halfW, cy - halfH, cx + halfW, cy + halfH];
 }
 
 /**
  * Area of a bbox in xyxy form. Returns 0 for degenerate boxes (x2 <= x1 or y2 <= y1).
  */
-export function bboxArea(_b: BBox): number {
-  throw new Error('not implemented');
+export function bboxArea(b: BBox): number {
+  const [x1, y1, x2, y2] = b;
+  const w = Math.max(0, x2 - x1);
+  const h = Math.max(0, y2 - y1);
+
+  return w * h;
 }
 
 /**
@@ -57,9 +80,16 @@ export function bboxArea(_b: BBox): number {
  * Returned coordinates are clamped; the result may be degenerate (zero-area).
  */
 export function clipBBox(
-  _b: BBox,
-  _width: number,
-  _height: number,
+  b: BBox,
+  width: number,
+  height: number,
 ): [number, number, number, number] {
-  throw new Error('not implemented');
+  const [x1, y1, x2, y2] = b;
+
+  return [
+    Math.min(width, Math.max(0, x1)),
+    Math.min(height, Math.max(0, y1)),
+    Math.min(width, Math.max(0, x2)),
+    Math.min(height, Math.max(0, y2)),
+  ];
 }
