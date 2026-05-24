@@ -180,6 +180,26 @@ describe('SortTracker — lifecycle on missed frames', () => {
     expect(out).toHaveLength(1);
     expect(out[0]?.id).toBe(1);
   });
+
+  it('advances timeSinceUpdate by exactly 1 per missed frame for a confirmed-then-lost track', () => {
+    // Per docs/decisions/0003-tracker-lifecycle-bookkeeping.md §4: every
+    // tracker must assert this invariant. SortTracker is single-stage and
+    // currently cannot exhibit the double-applyMiss bug that bit ByteTracker,
+    // but the test guards against future regressions if `runStandardLifecycle`
+    // ever grows a second applyMiss site (or if SortTracker stops using the
+    // shared helper).
+    const t = new SortTracker({ minHits: 1, maxAge: 10 });
+    const d = det([0, 0, 100, 100]);
+    t.update([d]); // frame 1: spawn (tentative; warmup output)
+    t.update([d]); // frame 2: hits=1 → confirmed
+    t.update([]); // miss 1 → lost, tsu must be exactly 1
+    expect(t.getLostTracks()).toHaveLength(1);
+    expect(t.getLostTracks()[0]?.timeSinceUpdate).toBe(1);
+    t.update([]); // miss 2 → still lost, tsu must be exactly 2
+    expect(t.getLostTracks()[0]?.timeSinceUpdate).toBe(2);
+    t.update([]); // miss 3 → still lost, tsu must be exactly 3
+    expect(t.getLostTracks()[0]?.timeSinceUpdate).toBe(3);
+  });
 });
 
 describe('SortTracker — payload + classId preserved', () => {
