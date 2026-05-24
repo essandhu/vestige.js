@@ -82,8 +82,9 @@ export function diou(a: BBox, b: BBox): number {
 }
 
 /**
- * Complete-IoU (Zheng et al., AAAI 2020). Adds an aspect-ratio consistency
- * term on top of DIoU.
+ * Complete-IoU (Zheng et al., AAAI 2020).
+ * CIoU = DIoU - α·v, where v = (4/π²)·(atan(w_a/h_a) - atan(w_b/h_b))² penalizes
+ * aspect-ratio mismatch and α = v / ((1 - IoU) + v) gates it by overlap.
  */
 export function ciou(a: BBox, b: BBox): number {
   const [ax1, ay1, ax2, ay2] = a;
@@ -114,10 +115,10 @@ export function ciou(a: BBox, b: BBox): number {
   if (cSq <= 0) return iouVal;
 
   const distTerm = rhoSq / cSq;
-  // Short-circuit before computing alpha: alpha = v / ((1 - iou) + v) is 0/0 when v = 0
-  // AND iou = 1 (identical boxes). Falling through would NaN the result.
   if (ah <= 0 || bh <= 0) return iouVal - distTerm;
   const v = FOUR_OVER_PI_SQ * (Math.atan(aw / ah) - Math.atan(bw / bh)) ** 2;
+  // α = v / ((1 - iou) + v) is 0/0 when v = 0 AND iou = 1 (identical boxes);
+  // short-circuit before falling through to the divide.
   if (v === 0) return iouVal - distTerm;
 
   const alpha = v / (1 - iouVal + v);
@@ -149,7 +150,9 @@ export function iouMatrix(preds: ReadonlyArray<BBox>, dets: ReadonlyArray<BBox>)
 }
 
 /**
- * Batched GIoU. Same layout as {@link iouMatrix}.
+ * Batched GIoU. Returns an M*N row-major Float64Array where
+ * `out[i * N + j] === giou(preds[i], dets[j])`. See {@link iouMatrix} for the
+ * cache-locality rationale.
  */
 export function giouMatrix(preds: ReadonlyArray<BBox>, dets: ReadonlyArray<BBox>): Float64Array {
   const N = dets.length;
