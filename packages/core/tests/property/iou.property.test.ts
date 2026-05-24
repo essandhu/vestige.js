@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { giou, iou, iouMatrix } from '../../src/geometry/iou.js';
+import { ciou, diou, giou, iou, iouMatrix } from '../../src/geometry/iou.js';
 import type { BBox } from '../../src/types.js';
 
 const positiveBBox = fc
@@ -58,6 +58,76 @@ describe.skip('GIoU invariants', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
         expect(giou(a, b)).toBeLessThanOrEqual(iou(a, b) + 1e-9);
+      }),
+    );
+  });
+});
+
+describe.skip('DIoU invariants', () => {
+  it('is in [-1, 1]', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        const v = diou(a, b);
+        expect(v).toBeGreaterThanOrEqual(-1 - 1e-9);
+        expect(v).toBeLessThanOrEqual(1 + 1e-9);
+      }),
+    );
+  });
+
+  it('diou <= iou for all box pairs', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(diou(a, b)).toBeLessThanOrEqual(iou(a, b) + 1e-9);
+      }),
+    );
+  });
+
+  it('diou(a, a) === 1 for positive-area boxes', () => {
+    fc.assert(
+      fc.property(positiveBBox, (a) => {
+        expect(diou(a, a)).toBeCloseTo(1, 9);
+      }),
+    );
+  });
+
+  it('is symmetric', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(diou(a, b)).toBeCloseTo(diou(b, a), 9);
+      }),
+    );
+  });
+});
+
+describe.skip('CIoU invariants', () => {
+  it('is bounded above by 1 (aspect term is non-negative)', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(ciou(a, b)).toBeLessThanOrEqual(1 + 1e-9);
+      }),
+    );
+  });
+
+  it('ciou <= diou for all box pairs', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(ciou(a, b)).toBeLessThanOrEqual(diou(a, b) + 1e-9);
+      }),
+    );
+  });
+
+  it('ciou(a, a) === 1 for positive-area boxes', () => {
+    fc.assert(
+      fc.property(positiveBBox, (a) => {
+        expect(ciou(a, a)).toBeCloseTo(1, 9);
+      }),
+    );
+  });
+
+  it('is symmetric', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(ciou(a, b)).toBeCloseTo(ciou(b, a), 9);
       }),
     );
   });

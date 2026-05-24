@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { giou, giouMatrix, iou, iouMatrix } from '../../src/geometry/iou.js';
+import { ciou, diou, giou, giouMatrix, iou, iouMatrix } from '../../src/geometry/iou.js';
 import type { BBox } from '../../src/types.js';
 
 // Suites are skipped until iou.ts is implemented on `feature/iou`. Un-skip them as the
@@ -78,6 +78,96 @@ describe.skip('giou', () => {
     for (const [a, b] of cases) {
       expect(giou(a, b)).toBeLessThanOrEqual(iou(a, b) + 1e-12);
     }
+  });
+});
+
+describe.skip('diou', () => {
+  it('returns 1 for identical boxes', () => {
+    expect(diou([0, 0, 10, 10], [0, 0, 10, 10])).toBe(1);
+  });
+
+  it('equals IoU when centers coincide', () => {
+    // b is fully inside a, both centered at (5, 5)  =>  rho^2 = 0  =>  diou = iou.
+    const a: BBox = [0, 0, 10, 10];
+    const b: BBox = [2, 2, 8, 8];
+    expect(diou(a, b)).toBeCloseTo(iou(a, b), 12);
+  });
+
+  it('matches the Zheng et al. AAAI 2020 formula on a half-overlap case', () => {
+    // a = [0,0,10,10], b = [0,5,10,15]:
+    //   IoU = 50/150 = 1/3; centers (5,5) and (5,10) => rho^2 = 25;
+    //   enclosing [0,0,10,15] => c^2 = 10^2 + 15^2 = 325.
+    //   DIoU = 1/3 - 25/325 = 10/39.
+    expect(diou([0, 0, 10, 10], [0, 5, 10, 15])).toBeCloseTo(10 / 39, 12);
+  });
+
+  it('is negative for disjoint boxes', () => {
+    // a, b each 10x10, horizontally separated by a 10-px gap:
+    //   IoU = 0; rho^2 = (25 - 5)^2 = 400; enclosing [0,0,30,10] => c^2 = 1000.
+    //   DIoU = 0 - 400/1000 = -0.4.
+    expect(diou([0, 0, 10, 10], [20, 0, 30, 10])).toBeCloseTo(-0.4, 12);
+  });
+
+  it('is symmetric', () => {
+    const a: BBox = [3, 4, 13, 14];
+    const b: BBox = [7, 8, 20, 25];
+    expect(diou(a, b)).toBeCloseTo(diou(b, a), 12);
+  });
+});
+
+describe.skip('ciou', () => {
+  it('returns 1 for identical boxes', () => {
+    expect(ciou([0, 0, 10, 10], [0, 0, 10, 10])).toBe(1);
+  });
+
+  it('equals DIoU when aspect ratios match (v = 0)', () => {
+    // Both boxes are 10x10 squares  =>  atan(w/h) terms cancel  =>  v = 0.
+    const a: BBox = [0, 0, 10, 10];
+    const b: BBox = [0, 5, 10, 15];
+    expect(ciou(a, b)).toBeCloseTo(diou(a, b), 12);
+  });
+
+  it('matches the Zheng et al. AAAI 2020 formula on an aspect-mismatch case', () => {
+    // a = [0,0,10,10]  (w/h = 1), b = [0,0,20,10]  (w/h = 2), top-aligned.
+    //   IoU = 100/200 = 0.5; centers (5,5) and (10,5) => rho^2 = 25;
+    //   enclosing [0,0,20,10] => c^2 = 500.
+    // CIoU = IoU - rho^2/c^2 - alpha*v, with v = (4/pi^2)*(atan(1) - atan(2))^2
+    // and alpha = v / ((1 - IoU) + v).
+    const a: BBox = [0, 0, 10, 10];
+    const b: BBox = [0, 0, 20, 10];
+    const iouVal = 0.5;
+    const rhoSq = 25;
+    const cSq = 500;
+    const v = (4 / Math.PI ** 2) * (Math.atan(1) - Math.atan(2)) ** 2;
+    const alpha = v / (1 - iouVal + v);
+    const expected = iouVal - rhoSq / cSq - alpha * v;
+    expect(ciou(a, b)).toBeCloseTo(expected, 12);
+  });
+
+  it('is at most DIoU (aspect term is non-negative)', () => {
+    const cases: Array<[BBox, BBox]> = [
+      [
+        [0, 0, 10, 10],
+        [2, 3, 8, 7],
+      ],
+      [
+        [0, 0, 100, 50],
+        [10, 10, 60, 40],
+      ],
+      [
+        [0, 0, 10, 10],
+        [0, 5, 10, 15],
+      ],
+    ];
+    for (const [a, b] of cases) {
+      expect(ciou(a, b)).toBeLessThanOrEqual(diou(a, b) + 1e-12);
+    }
+  });
+
+  it('is symmetric', () => {
+    const a: BBox = [3, 4, 13, 14];
+    const b: BBox = [7, 8, 20, 25];
+    expect(ciou(a, b)).toBeCloseTo(ciou(b, a), 12);
   });
 });
 
