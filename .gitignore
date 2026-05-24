@@ -46,10 +46,6 @@ Desktop.ini
 *~
 
 # AI assistant local state
-CLAUDE.md
 .claude/
 .aider*
 .continue/
-
-# Docs
-docs/
