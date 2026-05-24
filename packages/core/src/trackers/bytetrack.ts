@@ -322,16 +322,22 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
       // is inert here; we just want the counter bumps + updateTrack.
       this.applyMatch(stage2Tracks[ti]!, low[di]!);
     }
+    // Stage-1-unmatched lost tracks stay lost; their tsu advances. Run this
+    // BEFORE the stage-2-unmatched confirmed→lost transition below so the
+    // `state === 'lost'` filter only matches tracks that were ALREADY lost at
+    // frame start — otherwise a confirmed track that fell through stage 2
+    // would get applyMiss called twice (once below for the transition,
+    // again here because its state was just mutated to 'lost'), doubling its
+    // timeSinceUpdate increment per missed frame.
+    for (const ti of stage1.unmatchedTracks) {
+      const track = strackPool[ti]!;
+      if (track.state === 'lost') this.applyMiss(track);
+    }
     // Stage-2-unmatched confirmed tracks → lost.
     for (const ti of stage2.unmatchedTracks) {
       const track = stage2Tracks[ti]!;
       track.state = 'lost';
       this.applyMiss(track);
-    }
-    // Stage-1-unmatched lost tracks stay lost; their tsu advances.
-    for (const ti of stage1.unmatchedTracks) {
-      const track = strackPool[ti]!;
-      if (track.state === 'lost') this.applyMiss(track);
     }
 
     // 6. Stage 3: stage-1-unmatched HIGH dets ↔ tentative tracks.

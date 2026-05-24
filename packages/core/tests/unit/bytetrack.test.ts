@@ -175,6 +175,30 @@ describe('ByteTracker — lost-track retention (trackBuffer)', () => {
     expect(t.getActiveTracks()).toHaveLength(0);
     expect(t.getLostTracks()).toHaveLength(0);
   });
+
+  it('advances timeSinceUpdate by exactly 1 per missed frame for a confirmed-then-lost track', () => {
+    // Regression: a confirmed track unmatched in BOTH stage 1 (no high-score
+    // det) and stage 2 (no low-score det) used to receive applyMiss twice in
+    // the same frame — once when transitioning confirmed→lost, again because
+    // the post-transition state matched the `state === 'lost'` filter on the
+    // stage-1-unmatched-lost loop. Effect: timeSinceUpdate advanced by 2 per
+    // missed frame, halving the effective trackBuffer.
+    //
+    // With trackBuffer=1 (maxAge=1), the correct behavior is tsu=1 after one
+    // missed frame (1 > 1 is false → stays lost) and re-association in the
+    // very next frame should restore the same id. The bug would have tsu=2
+    // (2 > 1 → removed in-frame), and re-association would assign a new id.
+    const t = new ByteTracker({ trackBuffer: 1, frameRate: 30 });
+    const d = det([0, 0, 100, 100], 0.9);
+    t.update([d]); // frame 1: id=1 confirmed (frame-1 instant activation)
+    t.update([d]); // frame 2: still confirmed, tsu=0
+    t.update([]); // frame 3: miss → confirmed→lost, tsu must be exactly 1
+    expect(t.getLostTracks()).toHaveLength(1);
+    expect(t.getLostTracks()[0]?.timeSinceUpdate).toBe(1);
+    const out = t.update([d]); // frame 4: re-match within the trackBuffer=1 budget
+    expect(out).toHaveLength(1);
+    expect(out[0]?.id).toBe(1);
+  });
 });
 
 describe('ByteTracker — two non-overlapping detections stay distinct', () => {
