@@ -9,8 +9,8 @@ is the design spec; this file is the day-to-day "how we work" reference.
 
 - **TDD scaffold-first.** Tests + stubs (`throw new Error('not implemented')`) land before
   the implementation in commit history. The implementation then turns red tests green, one
-  function at a time, in foundational → derived order. See `docs/ARCHITECTURE.md` §13 for
-  the test pyramid.
+  function at a time, in foundational → derived order. See `ARCHITECTURE.md` §13 for the
+  test pyramid.
 - **Scaffold and implementation are separate commits within the same feature branch.** The
   scaffold commit contains type contracts, signatures, JSDoc, and failing tests — never
   working implementations. Implementation lands in subsequent commits on the same branch so
