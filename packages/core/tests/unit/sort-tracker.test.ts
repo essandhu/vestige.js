@@ -43,9 +43,16 @@ describe('SortTracker — first frame and ID assignment', () => {
 
   it('does not reuse ids after a track is removed', () => {
     const t = new SortTracker({ maxAge: 0, minHits: 1 });
-    t.update([det([0, 0, 10, 10])]); // id=1 created and confirmed
-    t.update([]); // miss → lost → removed (maxAge=0)
-    const out = t.update([det([0, 0, 10, 10])]); // new track
+    // Frame 1: spawn id=1 (tentative; output via warmup since frame=1 ≤ minHits=1).
+    const r1 = t.update([det([0, 0, 10, 10])]);
+    expect(r1[0]?.id).toBe(1);
+    // Frame 2: no detections → track 1 missed; tentative + tsu(1) > maxAge(0) → removed.
+    t.update([]);
+    // Frame 3: spawn (id=2, tentative; warmup expired, NOT output).
+    t.update([det([0, 0, 10, 10])]);
+    // Frame 4: match → hits=1 ≥ minHits=1 → confirmed → output as id=2.
+    const out = t.update([det([0, 0, 10, 10])]);
+    expect(out).toHaveLength(1);
     expect(out[0]?.id).toBe(2);
   });
 });
@@ -136,10 +143,13 @@ describe('SortTracker — two non-overlapping detections stay distinct', () => {
 describe('SortTracker — iouThreshold gating', () => {
   it('does not match a detection whose IoU with every track is below the threshold', () => {
     const t = new SortTracker({ iouThreshold: 0.5, minHits: 1, maxAge: 30 });
-    // Frame 1: spawn confirmed track id=1 at (0, 0, 100, 100) (minHits=1).
+    // Frame 1: spawn id=1 at (0, 0, 100, 100). Tentative, output via warmup.
     t.update([det([0, 0, 100, 100])]);
-    // Frame 2: zero-IoU detection. Track 1 misses → lost (not output, tsu=1).
-    // The unmatched detection spawns a NEW track id=2, confirmed under minHits=1.
+    // Frame 2: zero-IoU detection (200,200,300,300). Track 1 is gated out
+    // → stays tentative, tsu=1. Spawn id=2 from the unmatched detection.
+    t.update([det([200, 200, 300, 300])]);
+    // Frame 3: same detection → matches track 2 → hits=1 ≥ minHits=1 → confirmed.
+    // Track 1 stays tentative (still within maxAge buffer; not output).
     const out = t.update([det([200, 200, 300, 300])]);
     expect(out).toHaveLength(1);
     expect(out[0]?.id).toBe(2);
@@ -149,7 +159,9 @@ describe('SortTracker — iouThreshold gating', () => {
 describe('SortTracker — lifecycle on missed frames', () => {
   it('confirmed track survives maxAge frames of misses, then disappears', () => {
     const t = new SortTracker({ minHits: 1, maxAge: 2 });
-    t.update([det([0, 0, 10, 10])]); // confirmed
+    const d = det([0, 0, 10, 10]);
+    t.update([d]); // spawn (tentative)
+    t.update([d]); // hits=1 → confirmed
     t.update([]); // miss 1 → lost, tsu=1
     t.update([]); // miss 2 → lost, tsu=2
     t.update([]); // miss 3 → removed (tsu=3 > maxAge=2)
@@ -160,6 +172,7 @@ describe('SortTracker — lifecycle on missed frames', () => {
   it('confirmed → lost → re-found preserves the id', () => {
     const t = new SortTracker({ minHits: 1, maxAge: 10 });
     const d = det([0, 0, 100, 100]);
+    t.update([d]); // spawn (tentative)
     t.update([d]); // confirmed id=1
     t.update([]); // → lost
     t.update([]); // still lost
@@ -209,20 +222,24 @@ describe('SortTracker — Track shape', () => {
   it('reports state="confirmed" once minHits is reached', () => {
     const t = new SortTracker({ minHits: 3 });
     const d = det([10, 10, 50, 50]);
+    // Spawn detection is NOT a hit (sort.py compat), so 3 hits = 3 matches
+    // AFTER spawn → confirmed on frame 4.
     t.update([d]); // tentative (warmup output)
-    t.update([d]); // tentative
-    const out = t.update([d]); // 3rd hit → confirmed
+    t.update([d]); // tentative, hits=1
+    t.update([d]); // tentative, hits=2
+    const out = t.update([d]); // hits=3 ≥ minHits → confirmed
     expect(out[0]?.state).toBe('confirmed');
   });
 
   it('hits counts every match, age counts every alive frame', () => {
     const t = new SortTracker({ minHits: 1, maxAge: 10 });
     const d = det([10, 10, 50, 50]);
-    t.update([d]); // age=0, hits=1
-    t.update([d]); // age=1, hits=2
-    const out = t.update([d]); // age=2, hits=3
+    t.update([d]); // age=0, hits=0 (init; spawn isn't a hit)
+    t.update([d]); // age=1, hits=1 → confirmed
+    t.update([d]); // age=2, hits=2
+    const out = t.update([d]); // age=3, hits=3
     expect(out[0]?.hits).toBe(3);
-    expect(out[0]?.age).toBe(2);
+    expect(out[0]?.age).toBe(3);
   });
 });
 

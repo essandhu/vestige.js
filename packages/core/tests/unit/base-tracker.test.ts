@@ -60,12 +60,14 @@ class FakeTracker extends BaseTracker {
 
   protected initTrack(detection: Detection): InternalTrack {
     this.initCalls++;
+    // hits = 0, hitStreak = 0 to match sort.py — the spawn detection is NOT
+    // a hit. See `BaseTracker.initTrack` JSDoc.
     return {
       id: 0,
       state: 'tentative',
       age: 0,
-      hits: 1,
-      hitStreak: 1,
+      hits: 0,
+      hitStreak: 0,
       timeSinceUpdate: 0,
       kalmanState: NO_STATE,
       bbox: detection.bbox,
@@ -165,56 +167,66 @@ describe('BaseTracker.update — track IDs', () => {
   it('assigns id=1 to the first created track', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 30 });
     t.setAssociate(matchNone);
-    const out = t.update([det([0, 0, 10, 10])]);
-    expect(out[0]?.id).toBe(1);
+    t.update([det([0, 0, 10, 10])]);
+    // Track is tentative after spawn (hits=0); default exportConfirmed
+    // doesn't output it, so check via snapshot.
+    expect(t.snapshot()[0]?.id).toBe(1);
   });
 
   it('assigns monotonically increasing ids across frames', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 30 });
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10])]);
-    t.setAssociate(matchAll);
-    const second = t.update([det([0, 0, 10, 10]), det([20, 20, 30, 30])]);
-    const ids = second.map((tr) => tr.id).sort((a, b) => a - b);
+    t.update([det([0, 0, 10, 10])]); // spawn id=1
+    t.update([det([20, 20, 30, 30])]); // unmatched (track 1's only detection is itself) → spawn id=2
+    const ids = t
+      .snapshot()
+      .map((tr) => tr.id)
+      .sort((a, b) => a - b);
     expect(ids).toEqual([1, 2]);
   });
 
   it('does not reuse the id of a removed track', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 0 });
-    // Frame 1: spawn track id=1, confirmed (minHits=1).
+    // Frame 1: spawn track id=1 (tentative, hits=0).
     t.setAssociate(matchNone);
     t.update([det([0, 0, 10, 10])]);
-    // Frame 2: miss → lost → removed (maxAge=0 → timeSinceUpdate=1 > 0).
+    // Frame 2: miss → tentative + tsu(1) > maxAge(0) → removed.
     t.update([]);
-    // Frame 3: spawn a new track; id must be 2, not a recycled 1.
-    t.setAssociate(matchNone);
-    const out = t.update([det([50, 50, 60, 60])]);
-    expect(out[0]?.id).toBe(2);
+    expect(t.snapshot()).toHaveLength(0);
+    // Frame 3: spawn id=2 (not a recycled 1).
+    t.update([det([50, 50, 60, 60])]);
+    expect(t.snapshot()[0]?.id).toBe(2);
   });
 });
 
 describe('BaseTracker.update — tentative lifecycle', () => {
   it('promotes tentative → confirmed after minHits consecutive matches', () => {
-    const t = new FakeTracker({ minHits: 3, maxAge: 1 });
-    // Frame 1: spawn.
+    const t = new FakeTracker({ minHits: 3, maxAge: 5 });
+    // Frame 1: spawn (hits=0).
     t.setAssociate(matchNone);
     t.update([det([0, 0, 10, 10])]);
     expect(t.snapshot()[0]?.state).toBe('tentative');
-    // Frames 2, 3: match.
+    // Frames 2–4: match. Per sort.py convention, hits=0 at init so the
+    // 3rd match-after-spawn (= frame 4) is what trips minHits.
     t.setAssociate(matchAll);
-    t.update([det([0, 0, 10, 10])]);
-    expect(t.snapshot()[0]?.state).toBe('tentative'); // hits=2 < 3
-    t.update([det([0, 0, 10, 10])]);
-    expect(t.snapshot()[0]?.state).toBe('confirmed'); // hits=3 ≥ 3
+    t.update([det([0, 0, 10, 10])]); // hits=1
+    expect(t.snapshot()[0]?.state).toBe('tentative');
+    t.update([det([0, 0, 10, 10])]); // hits=2
+    expect(t.snapshot()[0]?.state).toBe('tentative');
+    t.update([det([0, 0, 10, 10])]); // hits=3 ≥ minHits → confirmed
+    expect(t.snapshot()[0]?.state).toBe('confirmed');
   });
 
-  it('removes a tentative track on the first miss', () => {
-    const t = new FakeTracker({ minHits: 3, maxAge: 5 });
+  it('keeps a tentative track alive for maxAge frames of misses, then removes it', () => {
+    const t = new FakeTracker({ minHits: 3, maxAge: 2 });
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10])]);
-    expect(t.snapshot()).toHaveLength(1);
-    // Frame 2: no detections; tentative track missed → removed.
-    t.update([]);
+    t.update([det([0, 0, 10, 10])]); // spawn, tsu=0
+    expect(t.snapshot()[0]?.state).toBe('tentative');
+    t.update([]); // tsu=1, alive
+    expect(t.snapshot()[0]?.state).toBe('tentative');
+    t.update([]); // tsu=2 == maxAge, alive
+    expect(t.snapshot()[0]?.state).toBe('tentative');
+    t.update([]); // tsu=3 > maxAge → removed
     expect(t.snapshot()).toHaveLength(0);
   });
 });
@@ -223,7 +235,11 @@ describe('BaseTracker.update — confirmed → lost → removed', () => {
   it('transitions confirmed → lost on a miss', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10])]); // confirmed (minHits=1)
+    t.update([det([0, 0, 10, 10])]); // spawn (tentative)
+    t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10])]); // hits=1 → confirmed
+    expect(t.snapshot()[0]?.state).toBe('confirmed');
+    t.setAssociate(matchNone);
     t.update([]); // miss
     expect(t.snapshot()[0]?.state).toBe('lost');
   });
@@ -231,7 +247,10 @@ describe('BaseTracker.update — confirmed → lost → removed', () => {
   it('keeps a lost track for maxAge frames, then removes it', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 2 });
     t.setAssociate(matchNone);
+    t.update([det([0, 0, 10, 10])]); // spawn
+    t.setAssociate(matchAll);
     t.update([det([0, 0, 10, 10])]); // confirmed
+    t.setAssociate(matchNone);
     t.update([]); // miss 1 → lost, tsu=1
     expect(t.snapshot()[0]?.state).toBe('lost');
     t.update([]); // miss 2 → still lost, tsu=2 (= maxAge)
@@ -243,7 +262,10 @@ describe('BaseTracker.update — confirmed → lost → removed', () => {
   it('promotes a lost track back to confirmed when re-matched', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
+    t.update([det([0, 0, 10, 10])]); // spawn
+    t.setAssociate(matchAll);
     t.update([det([0, 0, 10, 10])]); // confirmed
+    t.setAssociate(matchNone);
     t.update([]); // → lost
     expect(t.snapshot()[0]?.state).toBe('lost');
     t.setAssociate(matchAll);
@@ -254,7 +276,10 @@ describe('BaseTracker.update — confirmed → lost → removed', () => {
   it('resets timeSinceUpdate to 0 on re-match', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10])]);
+    t.update([det([0, 0, 10, 10])]); // spawn
+    t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10])]); // confirmed
+    t.setAssociate(matchNone);
     t.update([]); // tsu=1
     t.update([]); // tsu=2
     expect(t.snapshot()[0]?.timeSinceUpdate).toBe(2);
@@ -268,8 +293,9 @@ describe('BaseTracker.update — counters', () => {
   it('increments hits on every match, never on a miss', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10])]); // hits=1 (init)
+    t.update([det([0, 0, 10, 10])]); // hits=0 (init; spawn detection is NOT a hit)
     t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10])]); // hits=1
     t.update([det([0, 0, 10, 10])]); // hits=2
     t.setAssociate(matchNone);
     t.update([]); // miss, hits stays at 2
@@ -279,8 +305,9 @@ describe('BaseTracker.update — counters', () => {
   it('resets hitStreak to 0 on a miss', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10])]); // hitStreak=1
+    t.update([det([0, 0, 10, 10])]); // hitStreak=0 (init)
     t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10])]); // hitStreak=1
     t.update([det([0, 0, 10, 10])]); // hitStreak=2
     t.setAssociate(matchNone);
     t.update([]); // miss → hitStreak=0
@@ -301,7 +328,9 @@ describe('BaseTracker.exportConfirmed (default rule)', () => {
   it('returns confirmed tracks matched this frame', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
-    const out = t.update([det([0, 0, 10, 10])]);
+    t.update([det([0, 0, 10, 10])]); // spawn (tentative; default rule does not output)
+    t.setAssociate(matchAll);
+    const out = t.update([det([0, 0, 10, 10])]); // hits=1 → confirmed
     expect(out).toHaveLength(1);
     expect(out[0]?.state).toBe('confirmed');
   });
@@ -310,6 +339,9 @@ describe('BaseTracker.exportConfirmed (default rule)', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
     t.update([det([0, 0, 10, 10])]);
+    t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10])]); // confirmed
+    t.setAssociate(matchNone);
     const out = t.update([]); // lost this frame
     expect(out).toHaveLength(0);
   });
@@ -326,9 +358,11 @@ describe('BaseTracker — public Track materialization', () => {
   it('carries score, classId, and payload through from the matched detection', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
+    t.update([det([0, 0, 10, 10])]); // spawn with dummy detection
+    t.setAssociate(matchAll);
     const out = t.update([
       { bbox: [0, 0, 10, 10], score: 0.75, classId: 42, payload: { tag: 'cat' } },
-    ]);
+    ]); // match → updateTrack writes lastDetection from this frame → confirmed
     expect(out[0]?.score).toBe(0.75);
     expect(out[0]?.classId).toBe(42);
     expect(out[0]?.payload).toEqual({ tag: 'cat' });
@@ -337,8 +371,9 @@ describe('BaseTracker — public Track materialization', () => {
   it('reflects the post-update bbox (from the matched detection, not the prior prediction)', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10])]);
+    t.update([det([0, 0, 10, 10])]); // spawn
     t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10])]); // confirm
     const out = t.update([det([5, 5, 15, 15])]); // detection at new location
     expect(out[0]?.bbox).toEqual([5, 5, 15, 15]);
   });
@@ -347,14 +382,18 @@ describe('BaseTracker — public Track materialization', () => {
 describe('BaseTracker.getActiveTracks / getLostTracks', () => {
   it('getActiveTracks returns only confirmed tracks', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
+    // Spawn two tracks; confirm both (matchAll on frame 2).
     t.setAssociate(matchNone);
-    t.update([det([0, 0, 10, 10]), det([20, 20, 30, 30])]); // both confirmed
+    t.update([det([0, 0, 10, 10]), det([20, 20, 30, 30])]);
+    t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10]), det([20, 20, 30, 30])]); // both → confirmed
+    // Frame 3: only track 0 matches; track 1 → lost.
     t.setAssociate((dets, _ass) => ({
       matched: [[0, 0]],
       unmatchedTracks: [1],
       unmatchedDetections: dets.slice(1).map((_, i) => i + 1),
     }));
-    t.update([det([0, 0, 10, 10])]); // track 0 matched, track 1 → lost
+    t.update([det([0, 0, 10, 10])]);
     const active = t.getActiveTracks();
     expect(active.map((tr) => tr.state)).toEqual(['confirmed']);
   });
@@ -363,6 +402,8 @@ describe('BaseTracker.getActiveTracks / getLostTracks', () => {
     const t = new FakeTracker({ minHits: 1, maxAge: 5 });
     t.setAssociate(matchNone);
     t.update([det([0, 0, 10, 10]), det([20, 20, 30, 30])]);
+    t.setAssociate(matchAll);
+    t.update([det([0, 0, 10, 10]), det([20, 20, 30, 30])]); // both confirmed
     t.setAssociate((dets, _ass) => ({
       matched: [[0, 0]],
       unmatchedTracks: [1],
@@ -385,8 +426,8 @@ describe('BaseTracker.reset', () => {
     expect(t.frameIndex).toBe(0);
     expect(t.getActiveTracks()).toHaveLength(0);
     expect(t.getLostTracks()).toHaveLength(0);
-    const out = t.update([det([0, 0, 10, 10])]);
-    expect(out[0]?.id).toBe(1); // nextId reset
+    t.update([det([0, 0, 10, 10])]);
+    expect(t.snapshot()[0]?.id).toBe(1); // nextId reset
   });
 });
 

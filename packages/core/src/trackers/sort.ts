@@ -42,7 +42,13 @@ export interface SortTrackerOptions {
  *   (see {@link CvBBoxMotionModel}).
  * - Aspect ratio `r` is treated as constant — no velocity component.
  * - Cost matrix is `1 − IoU(predicted, detection)`; pairs below `iouThreshold`
- *   are gated to `+Infinity` so the Hungarian solver never picks them.
+ *   are gated to `+Infinity` so the Hungarian solver never picks them. sort.py
+ *   instead post-filters: it runs `linear_sum_assignment(-iou_matrix)` without
+ *   gating and then drops matches whose IoU fell below the threshold. These
+ *   strategies are observationally equivalent on the inputs that come up in
+ *   practice (any track gated out of the optimal pre-gated assignment would
+ *   also be post-filtered out of sort.py's optimal); the pre-gate convention
+ *   is what ARCHITECTURE.md §5.6 mandates for the family.
  * - Linear sum assignment via Jonker-Volgenant ({@link import('../solvers/hungarian.js').solveLsap}).
  *
  * Two intentional deviations from sort.py:
@@ -101,14 +107,18 @@ export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   }
 
   protected initTrack(detection: Detection<TPayload>): InternalTrack<TPayload> {
+    // hits = 0, hitStreak = 0: the spawn detection is NOT a hit (matches
+    // sort.py:KalmanBoxTracker.__init__). The first hit is recorded the next
+    // time the track matches; without this, SortTracker would confirm a track
+    // one frame earlier than sort.py.
     const measurement = xyxyToXysr(detection.bbox);
     const kalmanState: KalmanState = this.kalmanFilter.model.init(measurement);
     return {
       id: 0,
       state: 'tentative',
       age: 0,
-      hits: 1,
-      hitStreak: 1,
+      hits: 0,
+      hitStreak: 0,
       timeSinceUpdate: 0,
       kalmanState,
       bbox: xysrToXyxy(kalmanState.mean),

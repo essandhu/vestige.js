@@ -182,10 +182,14 @@ export abstract class BaseTracker<TPayload = unknown> implements Tracker<TPayloa
     // 5. Advance lifecycle states. The checks chain (not `else if`) so that a
     //    confirmed track that just missed on a frame with maxAge = 0 cascades
     //    confirmed → lost → removed in a single pass — matching sort.py's
-    //    `if (trk.time_since_update > self.max_age): pop` semantics.
+    //    `if (trk.time_since_update > self.max_age): pop` semantics. Tentative
+    //    tracks follow the same removal rule: they survive `maxAge` consecutive
+    //    misses, just like confirmed tracks. (sort.py has no separate tentative
+    //    state — every tracker is reaped on `tsu > max_age` regardless of how
+    //    many times it matched.)
     for (const track of this.tracks.values()) {
       if (track.state === 'tentative') {
-        if (track.timeSinceUpdate > 0) {
+        if (track.timeSinceUpdate > this.options.maxAge) {
           track.state = 'removed';
         } else if (track.hitStreak >= this.options.minHits) {
           track.state = 'confirmed';
@@ -260,8 +264,15 @@ export abstract class BaseTracker<TPayload = unknown> implements Tracker<TPayloa
   /**
    * Build a fresh {@link InternalTrack} from a first observation. The returned
    * track must have `id = 0` (caller assigns the real id), `age = 0`,
-   * `hits = 1`, `hitStreak = 1`, `timeSinceUpdate = 0`, and `state = 'tentative'`.
+   * `hits = 0`, `hitStreak = 0`, `timeSinceUpdate = 0`, and `state = 'tentative'`.
    * `kalmanState` and `bbox` are initialized from `detection`.
+   *
+   * The `hits = 0` convention matches `abewley/sort` (`sort.py:KalmanBoxTracker.__init__`):
+   * the spawn detection is **not** counted as a hit. The first hit is recorded
+   * the next time the track matches a detection, via {@link updateTrack} and the
+   * lifecycle in {@link update}. Subclasses that diverge from this convention
+   * (e.g. counting the init detection as a hit) will confirm tracks one frame
+   * earlier than the reference implementation.
    */
   protected abstract initTrack(detection: Detection<TPayload>): InternalTrack<TPayload>;
 
