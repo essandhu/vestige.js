@@ -9,7 +9,7 @@ import { xyahToXyxy, xyxyToXyah } from '../geometry/bbox.js';
 import { iouMatrix, iou as iouScalar } from '../geometry/iou.js';
 import { solveLsap } from '../solvers/hungarian.js';
 import type { BBox, Detection, Track } from '../types.js';
-import { type AssociationResult, BaseTracker, type InternalTrack } from './base.js';
+import { BaseTracker, type InternalTrack } from './base.js';
 
 /**
  * Construction options for {@link ByteTracker}. Defaults match the official
@@ -120,11 +120,12 @@ const REFERENCE_FRAME_RATE = 30;
  *   `buffer_size = int(frame_rate / 30.0 * track_buffer)` and
  *   `max_time_lost = buffer_size`).
  *
- * For this reason {@link update} is overridden in full rather than relying on
- * {@link BaseTracker.update}'s shared lifecycle. The abstract hooks
- * ({@link predictTrack}, {@link updateTrack}, {@link initTrack}) are still
- * implemented for parity with the base class contract, but {@link associate}
- * is unused — three-stage matching is inlined into {@link update}.
+ * For this reason {@link update} writes its own per-frame pipeline rather
+ * than calling {@link BaseTracker.runStandardLifecycle}. Per-track bookkeeping
+ * still uses the shared primitives ({@link BaseTracker.applyMatch},
+ * {@link BaseTracker.applyMiss}, {@link BaseTracker.spawnTrack},
+ * {@link BaseTracker.sweepRemoved}) so the counter / state-transition logic
+ * isn't duplicated.
  *
  * Two intentional deviations from `byte_tracker.py`:
  *
@@ -172,11 +173,7 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     const mot20 = options.mot20 ?? false;
     const maxAge = Math.floor((frameRate / REFERENCE_FRAME_RATE) * trackBuffer);
 
-    // ByteTrack confirms a track on its first match-after-spawn (frames > 1) or
-    // immediately on frame 1; either way the "consecutive matches required"
-    // count is 1 in BaseTracker terms. The lifecycle override below carries the
-    // remaining ByteTrack-specific transitions.
-    super({ minHits: 1, maxAge });
+    super();
 
     this.trackThresh = trackThresh;
     this.trackBuffer = trackBuffer;
@@ -254,18 +251,6 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   }
 
   /**
-   * Unused: ByteTrack's three-stage matching is inlined into {@link update}.
-   * The {@link BaseTracker} contract requires this method, so it stays as a
-   * never-called stub.
-   */
-  protected associate(
-    _detections: ReadonlyArray<Detection<TPayload>>,
-    _associableTracks: ReadonlyArray<InternalTrack<TPayload>>,
-  ): AssociationResult {
-    throw new Error('ByteTracker.associate is not used — see update() override');
-  }
-
-  /**
    * Process one frame of detections via the three-stage ByteTrack pipeline.
    * Returns the publicly-visible tracks (those `confirmed` and matched this
    * frame). See class docstring for the stage ordering and the lifecycle
@@ -315,13 +300,8 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
       !this.mot20,
     );
     for (const [ti, di] of stage1.matched) {
-      const track = strackPool[ti]!;
-      this.updateTrack(track, high[di]!);
-      track.hits++;
-      track.hitStreak++;
-      track.timeSinceUpdate = 0;
-      // A re-found lost track transitions back to confirmed (re_activate).
-      if (track.state === 'lost') track.state = 'confirmed';
+      // applyMatch handles `updateTrack` + counter bumps + lost→confirmed.
+      this.applyMatch(strackPool[ti]!, high[di]!);
     }
 
     // 5. Stage 2 pool: stage-1-unmatched but state==confirmed
@@ -338,35 +318,25 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
       false, // fuse_score not applied in stage 2 (matches the reference)
     );
     for (const [ti, di] of stage2.matched) {
-      const track = stage2Tracks[ti]!;
-      this.updateTrack(track, low[di]!);
-      track.hits++;
-      track.hitStreak++;
-      track.timeSinceUpdate = 0;
+      // Stage-2 pool is confirmed-only, so applyMatch's lost→confirmed branch
+      // is inert here; we just want the counter bumps + updateTrack.
+      this.applyMatch(stage2Tracks[ti]!, low[di]!);
     }
     // Stage-2-unmatched confirmed tracks → lost.
     for (const ti of stage2.unmatchedTracks) {
       const track = stage2Tracks[ti]!;
       track.state = 'lost';
-      track.hitStreak = 0;
-      track.timeSinceUpdate++;
+      this.applyMiss(track);
     }
     // Stage-1-unmatched lost tracks stay lost; their tsu advances.
     for (const ti of stage1.unmatchedTracks) {
       const track = strackPool[ti]!;
-      if (track.state === 'lost') {
-        track.hitStreak = 0;
-        track.timeSinceUpdate++;
-      }
+      if (track.state === 'lost') this.applyMiss(track);
     }
 
     // 6. Stage 3: stage-1-unmatched HIGH dets ↔ tentative tracks.
     const stage3Dets: Detection<TPayload>[] = [];
-    const stage3DetIndices: number[] = []; // back into `high`
-    for (const j of stage1.unmatchedDetections) {
-      stage3Dets.push(high[j]!);
-      stage3DetIndices.push(j);
-    }
+    for (const j of stage1.unmatchedDetections) stage3Dets.push(high[j]!);
     const stage3 = matchByIou(
       tentatives.map((t) => t.bbox),
       stage3Dets,
@@ -375,11 +345,10 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     );
     for (const [ti, di] of stage3.matched) {
       const track = tentatives[ti]!;
-      this.updateTrack(track, stage3Dets[di]!);
-      track.hits++;
-      track.hitStreak++;
-      track.timeSinceUpdate = 0;
+      this.applyMatch(track, stage3Dets[di]!);
       // Tentative → confirmed (one-chance rule; first match after spawn confirms).
+      // applyMatch's lost→confirmed branch is inert on a tentative track, so the
+      // explicit transition here is what actually promotes the track.
       track.state = 'confirmed';
     }
     // Stage-3-unmatched tentatives → removed immediately (mark_removed in the reference).
@@ -391,8 +360,7 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     for (const j of stage3.unmatchedDetections) {
       const det = stage3Dets[j]!;
       if (det.score < this.detThresh) continue;
-      const fresh = this.initTrack(det);
-      fresh.id = this.nextId++;
+      const fresh = this.spawnTrack(det);
       // Frame-1 deviation: STrack.activate(frame_id=1) sets is_activated=True
       // immediately, so the track is observable on its spawn frame. Frames 2+
       // require a stage-3 match next frame before becoming confirmed.
@@ -401,7 +369,6 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
         fresh.hits = 1;
         fresh.hitStreak = 1;
       }
-      this.tracks.set(fresh.id, fresh);
     }
 
     // 8. Reap lost tracks past max_time_lost.
@@ -412,9 +379,7 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     }
 
     // 9. Sweep removed tracks out of the map.
-    for (const [id, track] of this.tracks) {
-      if (track.state === 'removed') this.tracks.delete(id);
-    }
+    this.sweepRemoved();
 
     // 10. Deduplicate near-identical confirmed/lost pairs. When the IoU between
     //     a confirmed and a lost track exceeds 0.85 (i.e. iou_distance < 0.15),
