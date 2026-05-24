@@ -1,0 +1,7 @@
+# Normalize line endings to LF in the repo and on checkout, regardless of
+# the contributor's platform. Pairs with Biome's `formatter.lineEnding: "lf"`
+# so Windows clones don't drift back to CRLF.
+* text=auto eol=lf
+
+# Collapse the lockfile in PR diffs — it's generated, not authored.
+pnpm-lock.yaml -diff linguist-generated
