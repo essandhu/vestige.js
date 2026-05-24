@@ -1,16 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { KalmanState } from '../../src/filters/kalman.js';
 import {
+  type AssociateFn,
   type AssociationResult,
   BaseTracker,
   type InternalTrack,
 } from '../../src/trackers/base.js';
-import type { BBox, Detection } from '../../src/types.js';
+import type { BBox, Detection, Track } from '../../src/types.js';
 
 /**
- * Tests for {@link BaseTracker}'s lifecycle machinery in isolation from any
+ * Tests for the {@link BaseTracker} primitives and the
+ * {@link BaseTracker.runStandardLifecycle} helper in isolation from any
  * motion model. The fake subclass below uses a no-op Kalman state and a
- * scripted association function so each test can drive the state machine
+ * scripted association callback so each test can drive the state machine
  * deterministically.
  */
 
@@ -20,25 +22,30 @@ const NO_STATE: KalmanState = {
 };
 
 /**
- * Minimal {@link BaseTracker} subclass for testing the lifecycle. Motion is a
- * no-op (predicted bbox = last-known bbox). Association is injected per
- * instance via {@link FakeTracker.setAssociate}.
+ * Minimal {@link BaseTracker} subclass that exercises the standard lifecycle.
+ * Motion is a no-op (predicted bbox = last-known bbox). Association is
+ * injected per instance via {@link FakeTracker.setAssociate}.
  */
 class FakeTracker extends BaseTracker {
   predictCalls = 0;
   updateCalls = 0;
   initCalls = 0;
 
-  private associateFn: (
-    detections: ReadonlyArray<Detection>,
-    associable: ReadonlyArray<InternalTrack>,
-  ) => AssociationResult = () => ({ matched: [], unmatchedTracks: [], unmatchedDetections: [] });
+  private readonly minHits: number;
+  private readonly maxAge: number;
+  private associateFn: AssociateFn<unknown> = () => ({
+    matched: [],
+    unmatchedTracks: [],
+    unmatchedDetections: [],
+  });
 
   constructor(opts?: { minHits?: number; maxAge?: number }) {
-    super({ minHits: opts?.minHits ?? 3, maxAge: opts?.maxAge ?? 1 });
+    super();
+    this.minHits = opts?.minHits ?? 3;
+    this.maxAge = opts?.maxAge ?? 1;
   }
 
-  setAssociate(fn: typeof this.associateFn): void {
+  setAssociate(fn: AssociateFn<unknown>): void {
     this.associateFn = fn;
   }
 
@@ -46,6 +53,20 @@ class FakeTracker extends BaseTracker {
   snapshot(): InternalTrack[] {
     return [...this.tracks.values()];
   }
+
+  override update(detections: ReadonlyArray<Detection>): Track[] {
+    return this.runStandardLifecycle(
+      detections,
+      { minHits: this.minHits, maxAge: this.maxAge },
+      this.runAssociate,
+    );
+  }
+
+  // Stable arrow-fn property so the per-frame call into runStandardLifecycle
+  // doesn't allocate a new closure each frame. Forwards to the currently-set
+  // scripted fn so setAssociate works without rebinding.
+  private readonly runAssociate: AssociateFn<unknown> = (detections, associable) =>
+    this.associateFn(detections, associable);
 
   protected predictTrack(_track: InternalTrack): void {
     this.predictCalls++;
@@ -73,13 +94,6 @@ class FakeTracker extends BaseTracker {
       bbox: detection.bbox,
       lastDetection: detection,
     };
-  }
-
-  protected associate(
-    detections: ReadonlyArray<Detection>,
-    associable: ReadonlyArray<InternalTrack>,
-  ): AssociationResult {
-    return this.associateFn(detections, associable);
   }
 }
 
