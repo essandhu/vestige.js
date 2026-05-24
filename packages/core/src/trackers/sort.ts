@@ -7,7 +7,12 @@ import { CvBBoxMotionModel, xysrToXyxy, xyxyToXysr } from '../filters/motion-mod
 import { iouMatrix } from '../geometry/iou.js';
 import { solveLsap } from '../solvers/hungarian.js';
 import type { Detection, Track } from '../types.js';
-import { type AssociationResult, BaseTracker, type InternalTrack } from './base.js';
+import {
+  type AssociateFn,
+  type AssociationResult,
+  BaseTracker,
+  type InternalTrack,
+} from './base.js';
 
 /**
  * Construction options for {@link SortTracker}. Defaults match
@@ -50,6 +55,9 @@ export interface SortTrackerOptions {
  *   also be post-filtered out of sort.py's optimal); the pre-gate convention
  *   is what ARCHITECTURE.md §5.6 mandates for the family.
  * - Linear sum assignment via Jonker-Volgenant ({@link import('../solvers/hungarian.js').solveLsap}).
+ * - The per-frame lifecycle (predict → associate → update → spawn → advance
+ *   transitions → sweep → export) is the SORT default and is delegated to
+ *   {@link BaseTracker.runStandardLifecycle}.
  *
  * Two intentional deviations from sort.py:
  *
@@ -71,15 +79,27 @@ export interface SortTrackerOptions {
 export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   /** Resolved IoU threshold; cached so association doesn't read the options object per-pair. */
   readonly iouThreshold: number;
+  /** Resolved `minHits`; surfaced for inspection and reused by the lifecycle helper. */
+  readonly minHits: number;
+  /** Resolved `maxAge`. */
+  readonly maxAge: number;
+
   private readonly kalmanFilter: KalmanFilter;
 
   constructor(options: SortTrackerOptions = {}) {
-    super({
-      minHits: options.minHits ?? 3,
-      maxAge: options.maxAge ?? 1,
-    });
+    super();
+    this.minHits = options.minHits ?? 3;
+    this.maxAge = options.maxAge ?? 1;
     this.iouThreshold = options.iouThreshold ?? 0.3;
     this.kalmanFilter = new KalmanFilter(new CvBBoxMotionModel());
+  }
+
+  override update(detections: ReadonlyArray<Detection<TPayload>>): Track<TPayload>[] {
+    return this.runStandardLifecycle(
+      detections,
+      { minHits: this.minHits, maxAge: this.maxAge },
+      this.associate,
+    );
   }
 
   protected predictTrack(track: InternalTrack<TPayload>): void {
@@ -126,10 +146,16 @@ export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     };
   }
 
-  protected associate(
-    detections: ReadonlyArray<Detection<TPayload>>,
-    associableTracks: ReadonlyArray<InternalTrack<TPayload>>,
-  ): AssociationResult {
+  /**
+   * Single-pass IoU + Hungarian association. Bound as an arrow-function
+   * property so passing it as a callback to {@link runStandardLifecycle}
+   * doesn't allocate a new closure per frame
+   * (CONTRIBUTING.md §3.4: no closures inside per-frame loops).
+   */
+  private readonly associate: AssociateFn<TPayload> = (
+    detections,
+    associableTracks,
+  ): AssociationResult => {
     const M = associableTracks.length;
     const N = detections.length;
     if (M === 0 || N === 0) {
@@ -172,7 +198,7 @@ export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     for (let j = 0; j < N; j++) if (matchedDets[j] === 0) unmatchedDetections.push(j);
 
     return { matched, unmatchedTracks, unmatchedDetections };
-  }
+  };
 
   /**
    * sort.py's observable export rule:
@@ -189,7 +215,7 @@ export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    */
   protected override exportConfirmed(): Track<TPayload>[] {
     const out: Track<TPayload>[] = [];
-    const warmup = this._frameIndex <= this.options.minHits;
+    const warmup = this._frameIndex <= this.minHits;
     for (const track of this.tracks.values()) {
       if (track.timeSinceUpdate !== 0) continue;
       if (track.state === 'confirmed' || (warmup && track.state === 'tentative')) {
