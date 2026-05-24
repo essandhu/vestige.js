@@ -79,11 +79,7 @@ export function bboxArea(b: BBox): number {
  * Clip a bbox to the inclusive image bounds `[0, 0, width, height]`.
  * Returned coordinates are clamped; the result may be degenerate (zero-area).
  */
-export function clipBBox(
-  b: BBox,
-  width: number,
-  height: number,
-): [number, number, number, number] {
+export function clipBBox(b: BBox, width: number, height: number): [number, number, number, number] {
   const [x1, y1, x2, y2] = b;
 
   return [
