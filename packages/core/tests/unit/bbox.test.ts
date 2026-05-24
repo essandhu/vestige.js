@@ -12,10 +12,7 @@ import {
 
 const APPROX = 1e-9;
 
-// Suites are skipped until bbox.ts is implemented on `feature/bbox-geometry`. Un-skip
-// them as the first commit of that branch so the impl PR shows the red → green arc.
-
-describe.skip('xyxyToXywh', () => {
+describe('xyxyToXywh', () => {
   it('converts to top-left + width/height', () => {
     expect(xyxyToXywh([10, 20, 30, 50])).toEqual([10, 20, 20, 30]);
   });
@@ -25,13 +22,13 @@ describe.skip('xyxyToXywh', () => {
   });
 });
 
-describe.skip('xywhToXyxy', () => {
+describe('xywhToXyxy', () => {
   it('is the inverse of xyxyToXywh', () => {
     expect(xywhToXyxy([10, 20, 20, 30])).toEqual([10, 20, 30, 50]);
   });
 });
 
-describe.skip('xyxyToCxcywh', () => {
+describe('xyxyToCxcywh', () => {
   it('returns center coordinates and size', () => {
     expect(xyxyToCxcywh([10, 20, 30, 50])).toEqual([20, 35, 20, 30]);
   });
@@ -41,13 +38,13 @@ describe.skip('xyxyToCxcywh', () => {
   });
 });
 
-describe.skip('cxcywhToXyxy', () => {
+describe('cxcywhToXyxy', () => {
   it('is the inverse of xyxyToCxcywh', () => {
     expect(cxcywhToXyxy([20, 35, 20, 30])).toEqual([10, 20, 30, 50]);
   });
 });
 
-describe.skip('xyxyToXyah', () => {
+describe('xyxyToXyah', () => {
   it('returns center, aspect ratio (w/h), and height', () => {
     // [10, 20, 30, 50]  =>  w=20, h=30, cx=20, cy=35, a=20/30
     const [cx, cy, a, h] = xyxyToXyah([10, 20, 30, 50]);
@@ -63,7 +60,7 @@ describe.skip('xyxyToXyah', () => {
   });
 });
 
-describe.skip('xyahToXyxy', () => {
+describe('xyahToXyxy', () => {
   it('round-trips with xyxyToXyah', () => {
     const original: [number, number, number, number] = [10, 20, 30, 50];
     const xyah = xyxyToXyah(original);
@@ -75,7 +72,7 @@ describe.skip('xyahToXyxy', () => {
   });
 });
 
-describe.skip('bboxArea', () => {
+describe('bboxArea', () => {
   it('computes width times height for positive boxes', () => {
     expect(bboxArea([10, 20, 30, 50])).toBe(600);
     expect(bboxArea([0, 0, 100, 100])).toBe(10000);
@@ -92,7 +89,7 @@ describe.skip('bboxArea', () => {
   });
 });
 
-describe.skip('clipBBox', () => {
+describe('clipBBox', () => {
   it('leaves in-bounds boxes unchanged', () => {
     expect(clipBBox([10, 10, 40, 40], 100, 100)).toEqual([10, 10, 40, 40]);
   });
