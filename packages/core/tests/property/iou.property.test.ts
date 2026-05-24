@@ -1,6 +1,6 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import { giou, iou, iouMatrix } from '../../src/geometry/iou.js';
+import { ciou, diou, giou, iou, iouMatrix } from '../../src/geometry/iou.js';
 import type { BBox } from '../../src/types.js';
 
 const positiveBBox = fc
@@ -12,10 +12,7 @@ const positiveBBox = fc
   )
   .map(([x, y, w, h]) => [x, y, x + w, y + h] as BBox);
 
-// Suites are skipped until iou.ts is implemented on `feature/iou`. Un-skip them as the
-// first commit of that branch so the impl PR shows the red → green arc.
-
-describe.skip('IoU invariants', () => {
+describe('IoU invariants', () => {
   it('is in [0, 1]', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -43,7 +40,7 @@ describe.skip('IoU invariants', () => {
   });
 });
 
-describe.skip('GIoU invariants', () => {
+describe('GIoU invariants', () => {
   it('is in [-1, 1]', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -63,7 +60,77 @@ describe.skip('GIoU invariants', () => {
   });
 });
 
-describe.skip('iouMatrix matches scalar iou', () => {
+describe('DIoU invariants', () => {
+  it('is in [-1, 1]', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        const v = diou(a, b);
+        expect(v).toBeGreaterThanOrEqual(-1 - 1e-9);
+        expect(v).toBeLessThanOrEqual(1 + 1e-9);
+      }),
+    );
+  });
+
+  it('diou <= iou for all box pairs', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(diou(a, b)).toBeLessThanOrEqual(iou(a, b) + 1e-9);
+      }),
+    );
+  });
+
+  it('diou(a, a) === 1 for positive-area boxes', () => {
+    fc.assert(
+      fc.property(positiveBBox, (a) => {
+        expect(diou(a, a)).toBeCloseTo(1, 9);
+      }),
+    );
+  });
+
+  it('is symmetric', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(diou(a, b)).toBeCloseTo(diou(b, a), 9);
+      }),
+    );
+  });
+});
+
+describe('CIoU invariants', () => {
+  it('is bounded above by 1 (aspect term is non-negative)', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(ciou(a, b)).toBeLessThanOrEqual(1 + 1e-9);
+      }),
+    );
+  });
+
+  it('ciou <= diou for all box pairs', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(ciou(a, b)).toBeLessThanOrEqual(diou(a, b) + 1e-9);
+      }),
+    );
+  });
+
+  it('ciou(a, a) === 1 for positive-area boxes', () => {
+    fc.assert(
+      fc.property(positiveBBox, (a) => {
+        expect(ciou(a, a)).toBeCloseTo(1, 9);
+      }),
+    );
+  });
+
+  it('is symmetric', () => {
+    fc.assert(
+      fc.property(positiveBBox, positiveBBox, (a, b) => {
+        expect(ciou(a, b)).toBeCloseTo(ciou(b, a), 9);
+      }),
+    );
+  });
+});
+
+describe('iouMatrix matches scalar iou', () => {
   it('cell (i, j) equals iou(preds[i], dets[j])', () => {
     fc.assert(
       fc.property(
