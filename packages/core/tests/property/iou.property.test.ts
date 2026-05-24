@@ -12,10 +12,7 @@ const positiveBBox = fc
   )
   .map(([x, y, w, h]) => [x, y, x + w, y + h] as BBox);
 
-// Suites are skipped until iou.ts is implemented on `feature/iou`. Un-skip them as the
-// first commit of that branch so the impl PR shows the red → green arc.
-
-describe.skip('IoU invariants', () => {
+describe('IoU invariants', () => {
   it('is in [0, 1]', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -43,7 +40,7 @@ describe.skip('IoU invariants', () => {
   });
 });
 
-describe.skip('GIoU invariants', () => {
+describe('GIoU invariants', () => {
   it('is in [-1, 1]', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -63,7 +60,7 @@ describe.skip('GIoU invariants', () => {
   });
 });
 
-describe.skip('DIoU invariants', () => {
+describe('DIoU invariants', () => {
   it('is in [-1, 1]', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -99,7 +96,7 @@ describe.skip('DIoU invariants', () => {
   });
 });
 
-describe.skip('CIoU invariants', () => {
+describe('CIoU invariants', () => {
   it('is bounded above by 1 (aspect term is non-negative)', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -133,7 +130,7 @@ describe.skip('CIoU invariants', () => {
   });
 });
 
-describe.skip('iouMatrix matches scalar iou', () => {
+describe('iouMatrix matches scalar iou', () => {
   it('cell (i, j) equals iou(preds[i], dets[j])', () => {
     fc.assert(
       fc.property(
