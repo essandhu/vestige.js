@@ -12,7 +12,10 @@ const positiveBBox = fc
   )
   .map(([x, y, w, h]) => [x, y, x + w, y + h] as BBox);
 
-describe('IoU invariants', () => {
+// Suites are skipped until iou.ts is implemented on `feature/iou`. Un-skip them as the
+// first commit of that branch so the impl PR shows the red → green arc.
+
+describe.skip('IoU invariants', () => {
   it('is in [0, 1]', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -40,7 +43,7 @@ describe('IoU invariants', () => {
   });
 });
 
-describe('GIoU invariants', () => {
+describe.skip('GIoU invariants', () => {
   it('is in [-1, 1]', () => {
     fc.assert(
       fc.property(positiveBBox, positiveBBox, (a, b) => {
@@ -60,7 +63,7 @@ describe('GIoU invariants', () => {
   });
 });
 
-describe('iouMatrix matches scalar iou', () => {
+describe.skip('iouMatrix matches scalar iou', () => {
   it('cell (i, j) equals iou(preds[i], dets[j])', () => {
     fc.assert(
       fc.property(

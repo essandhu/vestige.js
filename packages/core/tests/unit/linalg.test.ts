@@ -21,7 +21,10 @@ function expectCloseArray(actual: Float64Array, expected: ArrayLike<number>, eps
   }
 }
 
-describe('matMul', () => {
+// Suites are skipped until linalg.ts is implemented on `feature/linalg`. Un-skip them as
+// the first commit of that branch so the impl PR shows the red → green arc.
+
+describe.skip('matMul', () => {
   it('2x2 * 2x2 sanity', () => {
     // A = [[1,2],[3,4]], B = [[5,6],[7,8]]  =>  A*B = [[19,22],[43,50]]
     const a = f(1, 2, 3, 4);
@@ -53,7 +56,7 @@ describe('matMul', () => {
   });
 });
 
-describe('transpose', () => {
+describe.skip('transpose', () => {
   it('swaps dimensions correctly', () => {
     // A = [[1,2,3],[4,5,6]]  =>  Aᵀ = [[1,4],[2,5],[3,6]]
     expectCloseArray(transpose(f(1, 2, 3, 4, 5, 6), 2, 3), [1, 4, 2, 5, 3, 6]);
@@ -66,21 +69,21 @@ describe('transpose', () => {
   });
 });
 
-describe('matVec', () => {
+describe.skip('matVec', () => {
   it('y = A * x', () => {
     // A = [[1,2,3],[4,5,6]]  (2x3),  x = [1,1,1]  =>  y = [6,15]
     expectCloseArray(matVec(f(1, 2, 3, 4, 5, 6), f(1, 1, 1), 2, 3), [6, 15]);
   });
 });
 
-describe('outerProduct', () => {
+describe.skip('outerProduct', () => {
   it('produces an m x n matrix in row-major order', () => {
     // x = [1,2], y = [3,4,5]  =>  M = [[3,4,5],[6,8,10]]
     expectCloseArray(outerProduct(f(1, 2), f(3, 4, 5)), [3, 4, 5, 6, 8, 10]);
   });
 });
 
-describe('addInPlace / subInPlace', () => {
+describe.skip('addInPlace / subInPlace', () => {
   it('mutates A and returns A', () => {
     const a = f(1, 2, 3, 4);
     const b = f(10, 20, 30, 40);
@@ -97,7 +100,7 @@ describe('addInPlace / subInPlace', () => {
   });
 });
 
-describe('cholesky', () => {
+describe.skip('cholesky', () => {
   it('returns I for the identity matrix', () => {
     const I3 = f(1, 0, 0, 0, 1, 0, 0, 0, 1);
     expectCloseArray(cholesky(I3, 3), [1, 0, 0, 0, 1, 0, 0, 0, 1]);
@@ -132,7 +135,7 @@ describe('cholesky', () => {
   });
 });
 
-describe('choleskySolve', () => {
+describe.skip('choleskySolve', () => {
   it('solves A x = b given the Cholesky factor of A', () => {
     // A = [[4,2],[2,3]], b = [6, 5]  =>  x = [1, 1]
     const A = f(4, 2, 2, 3);

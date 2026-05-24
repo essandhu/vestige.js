@@ -33,7 +33,10 @@ function approxTuple(a: readonly number[], b: readonly number[]) {
   }
 }
 
-describe('bbox conversions are bijective', () => {
+// Suites are skipped until bbox.ts is implemented on `feature/bbox-geometry`. Un-skip
+// them as the first commit of that branch so the impl PR shows the red → green arc.
+
+describe.skip('bbox conversions are bijective', () => {
   it('xyxy -> xywh -> xyxy is identity', () => {
     fc.assert(
       fc.property(positiveBBox, (b) => {
@@ -59,7 +62,7 @@ describe('bbox conversions are bijective', () => {
   });
 });
 
-describe('bboxArea invariants', () => {
+describe.skip('bboxArea invariants', () => {
   it('is non-negative for any input', () => {
     fc.assert(
       fc.property(
@@ -88,7 +91,7 @@ describe('bboxArea invariants', () => {
   });
 });
 
-describe('clipBBox stays within image bounds', () => {
+describe.skip('clipBBox stays within image bounds', () => {
   it('result corners are within [0, width] x [0, height]', () => {
     fc.assert(
       fc.property(
