@@ -40,9 +40,16 @@ Desktop.ini
 .vscode/
 .idea/
 .cursor/
+.zed/
 *.swp
 *.swo
 *~
+
+# AI assistant local state
+CLAUDE.md
+.claude/
+.aider*
+.continue/
 
 # Docs
 docs/
