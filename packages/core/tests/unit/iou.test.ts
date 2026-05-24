@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { giou, giouMatrix, iou, iouMatrix } from '../../src/geometry/iou.js';
 import type { BBox } from '../../src/types.js';
 
-describe('iou', () => {
+// Suites are skipped until iou.ts is implemented on `feature/iou`. Un-skip them as the
+// first commit of that branch so the impl PR shows the red → green arc.
+
+describe.skip('iou', () => {
   it('returns 1 for identical boxes', () => {
     expect(iou([0, 0, 10, 10], [0, 0, 10, 10])).toBe(1);
   });
@@ -34,7 +37,7 @@ describe('iou', () => {
   });
 });
 
-describe('giou', () => {
+describe.skip('giou', () => {
   it('equals IoU when one box contains the other', () => {
     // smallest enclosing box equals the union of the two boxes => giou == iou
     const a: BBox = [0, 0, 10, 10];
@@ -78,7 +81,7 @@ describe('giou', () => {
   });
 });
 
-describe('iouMatrix', () => {
+describe.skip('iouMatrix', () => {
   it('lays out values in row-major order matching scalar iou', () => {
     const preds: BBox[] = [
       [0, 0, 10, 10],
@@ -105,7 +108,7 @@ describe('iouMatrix', () => {
   });
 });
 
-describe('giouMatrix', () => {
+describe.skip('giouMatrix', () => {
   it('matches scalar giou cell-by-cell', () => {
     const preds: BBox[] = [
       [0, 0, 10, 10],
