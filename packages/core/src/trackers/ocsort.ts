@@ -552,10 +552,16 @@ export class OcSortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    *     ret.append(...)
    * ```
    *
-   * Equivalently in our explicit lifecycle: confirmed tracks matched this
-   * frame are always output; during the first `minHits` frames, tentative
-   * tracks matched this frame are also output (the warmup clause that lets
-   * a detection appear in the very first frame's result).
+   * The condition is gated on `hit_streak`, not on the explicit lifecycle
+   * `state`. The two are NOT equivalent for re-found tracks: a confirmed
+   * track that misses for `tsu > 0` frames has `hit_streak = 0` after its
+   * first miss (set in {@link predictTrack}'s SORT-style reset via
+   * {@link applyMiss}). On re-association the standard `applyMatch` bumps
+   * `hit_streak` back to 1, and noahcao requires `min_hits` more matches
+   * before re-emitting the track. SortTracker's older state-based export
+   * rule diverges here; OC-SORT's faithfulness fixture (`ocsort-noahcao/`)
+   * exercises this gap directly, which is why this override mirrors the
+   * reference exactly.
    *
    * The reference's output bbox preference (`last_observation[:4]` when
    * available, else `get_state()[0]`) is matched here by exporting
@@ -568,7 +574,7 @@ export class OcSortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     const warmup = this._frameIndex <= this.minHits;
     for (const track of this.tracks.values()) {
       if (track.timeSinceUpdate !== 0) continue;
-      if (track.state === 'confirmed' || (warmup && track.state === 'tentative')) {
+      if (track.hitStreak >= this.minHits || warmup) {
         out.push(this.materializeTrack(track));
       }
     }
