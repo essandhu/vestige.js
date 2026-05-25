@@ -30,8 +30,12 @@ py kalman-update/gen.py
 Commit `gen.py` and `data.json` together — never one without the other (ADR-0002
 §4).
 
+Fixtures with non-trivial setup beyond `requirements.txt` (e.g. cloning an
+external reference repo) document their setup in their per-fixture README.
+
 ## What lives here today
 
-| Directory | Used by |
-|---|---|
-| `kalman-update/` | `tests/unit/cv-xyah-fixture.test.ts` — cv-xyah KF predict+update oracles |
+| Directory | Used by | Extra setup |
+|---|---|---|
+| `kalman-update/` | `tests/unit/cv-xyah-fixture.test.ts` — cv-xyah KF predict+update oracles | none |
+| `ocsort-noahcao/` | `tests/validation/ocsort-noahcao-fixture.test.ts` — cross-implementation faithfulness vs. `noahcao/OC_SORT` | clone `noahcao/OC_SORT` at the pinned commit (see fixture README) |

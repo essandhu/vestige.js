@@ -21,7 +21,8 @@ This is **distinct from**:
 
 | File | Tracker | Scenario class |
 |---|---|---|
-| `ocsort-synthetic.test.ts` | `OcSortTracker` | ORU (occlusion → re-association drift correction), OCM (directional cost), OCR (last-observation rescue) — see paper §3.2–3.4. |
+| `ocsort-synthetic.test.ts` | `OcSortTracker` | ORU (occlusion → re-association drift correction), OCM (directional cost), OCR (last-observation rescue) — see paper §3.2–3.4. Hand-traced expected outcomes. |
+| `ocsort-noahcao-fixture.test.ts` | `OcSortTracker` | Per-frame parity with `noahcao/OC_SORT` on a 60-frame synthetic sequence. See `packages/core/fixtures/ocsort-noahcao/README.md` for the sequence design and regeneration workflow. |
 
 ## When to add a validation test
 
@@ -52,15 +53,12 @@ If two of three apply, add the test.
   *and* OCR, split it into two tests so a failure tells you which mechanism
   broke.
 
-## Why no Python fixture (yet)
+## Python-oracle fixtures
 
-ADR-0002 §6 defers sequence-level Python oracles to "when v0.1 trackers
-exist and there's something to validate against." OC-SORT is the first
-tracker where ORU's effect on the Kalman state is too subtle to
-hand-verify in a single test — but a hand-designed scenario with a
-specific ID-preservation outcome is sufficient to catch correctness
-regressions at this stage. The full noahcao/OC_SORT cross-check fixture
-(per the workflow in `packages/core/fixtures/README.md`) lands when the
-maintainer next runs the reference locally; the harness here is shaped
-to absorb that fixture as a parallel `data.json`-backed test without
-restructuring.
+Sequence-level cross-implementation fixtures live in
+`packages/core/fixtures/` (per ADR-0002) alongside the per-function
+numerical oracles. A validation test loads the JSON and drives the TS
+tracker through the same per-frame inputs; the per-fixture README
+documents the setup needed to regenerate. Today: `ocsort-noahcao/` is
+the only sequence-level fixture; more will land as additional trackers
+gain cross-implementation parity tests.

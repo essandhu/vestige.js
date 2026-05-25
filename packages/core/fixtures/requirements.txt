@@ -1,2 +1,5 @@
 numpy==2.4.4
 scipy==1.17.1
+# Required only by ocsort-noahcao/gen.py (noahcao/OC_SORT imports
+# filterpy.common.reshape_z and filterpy.stats.logpdf in kalmanfilter.py).
+filterpy==1.4.5
