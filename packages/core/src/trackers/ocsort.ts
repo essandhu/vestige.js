@@ -15,6 +15,11 @@ import { BaseTracker, type InternalTrack } from './base.js';
  * vestige.js ships `'iou'` and `'giou'`; `'ciou'`, `'diou'`, and `'ct_dist'`
  * from the reference are not exposed because they are not used in any
  * benchmarked OC-SORT configuration in the paper.
+ *
+ * Note: per `ocsort.py:OCSort.update`, the asoFunc selector is consulted
+ * **only** by the BYTE stage (when `useByte = true`) and by OCR. The
+ * primary stage's IoU cost is hard-coded to `iou_batch` in the reference;
+ * this port preserves that.
  */
 export type OcSortAsoFunc = 'iou' | 'giou';
 
@@ -31,7 +36,7 @@ export type OcSortAsoFunc = 'iou' | 'giou';
  * | `minHits` | 3 | noahcao default; warmup window length |
  * | `iouThreshold` | 0.3 | noahcao default; primary-association IoU cutoff |
  * | `deltaT` | 3 | noahcao default; OCM velocity-baseline window |
- * | `asoFunc` | 'iou' | noahcao default; primary association cost function |
+ * | `asoFunc` | 'iou' | noahcao default; cost function for the BYTE and OCR stages |
  * | `inertia` | 0.2 | noahcao default; OCM (`vdc_weight`) angular-cost weight |
  * | `useByte` | false | noahcao default; enables the optional ByteTrack-style low-score stage |
  *
@@ -75,10 +80,10 @@ export interface OcSortTrackerOptions {
    */
   readonly deltaT?: number;
   /**
-   * Primary-stage cost function. `'iou'` is the paper's default; `'giou'`
-   * is the alternative reported in noahcao's `ASSO_FUNCS` table. The OCR
-   * (recovery) stage always uses the same function as the primary stage.
-   * Default `'iou'`.
+   * Cost function for the BYTE and OCR stages. `'iou'` is the paper's
+   * default; `'giou'` is the alternative reported in noahcao's `ASSO_FUNCS`
+   * table. The primary stage always uses IoU (the reference's `associate()`
+   * hard-codes `iou_batch`). Default `'iou'`.
    */
   readonly asoFunc?: OcSortAsoFunc;
   /**
@@ -225,9 +230,10 @@ export class OcSortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
 
   /**
    * Single Kalman update for a matched detection. Refreshes
-   * `bbox`, `kalmanState`, and `lastDetection`; does **not** record
+   * `bbox`, `kalmanState`, and `lastDetection`. Does **not** record
    * observation history or update velocity — that bookkeeping lives in
-   * {@link recordObservation} so {@link applyMatch} can drive both.
+   * {@link applyOcSortMatch} so {@link runORU} can be inserted between
+   * the rollback and the final update.
    */
   protected updateTrack(track: InternalTrack<TPayload>, detection: Detection<TPayload>): void {
     const measurement = xyxyToXysr(detection.bbox);
@@ -267,37 +273,274 @@ export class OcSortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   }
 
   /**
-   * Process one frame of detections through the OC-SORT pipeline:
-   *
-   * 1. Predict every existing track; age each by 1.
-   * 2. Partition detections at `detThresh`. Optional BYTE pool collects
-   *    `0.1 < score < detThresh` detections when `useByte = true`.
-   * 3. **Primary association** — high-score detections ↔ all tracks,
-   *    using IoU (or GIoU per `asoFunc`) augmented by the OCM angular term.
-   * 4. **ORU (Observation Re-Update)** — for each matched lost track, roll
-   *    the Kalman state back to the pre-occlusion snapshot and replay a
-   *    linearly-interpolated virtual trajectory of measurement updates
-   *    ending at the new observation, then apply the standard match
-   *    bookkeeping. For matched confirmed tracks, just bookkeep.
-   * 5. **Optional BYTE stage** — low-score detections ↔ stage-3-unmatched
-   *    tracks, IoU-only cost. Stage-2-matched tracks get the standard
-   *    bookkeeping (BYTE matches do not trigger ORU in the reference).
-   * 6. **OCR (Observation-Centric Recovery)** — unmatched detections ↔
-   *    unmatched tracks' `lastObservation` (not Kalman predictions) using
-   *    the primary cost function.
-   * 7. Mark unmatched tracks (snapshotting Kalman state for ORU on the
-   *    first miss); spawn new tracks from leftover unmatched high-score
-   *    detections.
-   * 8. Advance state transitions (tentative → confirmed via warmup or
-   *    hitStreak; confirmed → lost on miss; lost → removed past `maxAge`).
-   * 9. Sweep removed; export per the warmup-aware rule (see
-   *    {@link exportConfirmed}).
-   *
-   * @throws Error with `not implemented` on the scaffold commit; the
-   *   implementation commit turns this method green.
+   * Process one frame of detections through the OC-SORT pipeline. See the
+   * class JSDoc for the algorithmic shape; numbered steps in the body
+   * correspond to the per-frame stages described there.
    */
-  override update(_detections: ReadonlyArray<Detection<TPayload>>): Track<TPayload>[] {
-    throw new Error('OcSortTracker.update: not implemented');
+  override update(detections: ReadonlyArray<Detection<TPayload>>): Track<TPayload>[] {
+    this._frameIndex++;
+
+    // 1. Predict every existing track and age it. Snapshot must be taken
+    //    BEFORE applyOcSortMiss (in step 7) to capture the post-predict state
+    //    matching noahcao's `freeze()` semantics; that's handled there.
+    const trackArr: OcSortInternalTrack<TPayload>[] = [];
+    for (const t of this.tracks.values()) trackArr.push(t as OcSortInternalTrack<TPayload>);
+    for (const t of trackArr) {
+      this.predictTrack(t);
+      t.age++;
+    }
+
+    // 2. Partition detections. The reference's three buckets:
+    //      remain_inds = scores > det_thresh        → primary association
+    //      inds_second = (scores > 0.1) AND (scores < det_thresh) → BYTE only
+    //      everything else (≤ 0.1, or exactly == det_thresh) is discarded.
+    //    Strict inequalities mirror noahcao verbatim — boundary detections
+    //    are deliberately uncovered.
+    const high: Detection<TPayload>[] = [];
+    const low: Detection<TPayload>[] = [];
+    for (const d of detections) {
+      if (d.score > this.detThresh) high.push(d);
+      else if (this.useByte && d.score > LOW_SCORE_FLOOR && d.score < this.detThresh) low.push(d);
+    }
+
+    // 3. Stage 1 — OCM-augmented IoU association over (all tracks × high dets).
+    const stage1 = associatePrimary(trackArr, high, this.iouThreshold, this.inertia, this.deltaT);
+
+    // 4. Apply matches. `applyOcSortMatch` handles ORU (for lost tracks with
+    //    a snapshot), velocity update, and the standard match bookkeeping.
+    for (const [ti, di] of stage1.matched) {
+      this.applyOcSortMatch(trackArr[ti]!, high[di]!);
+    }
+
+    let stillUnmatchedTrackIdx = stage1.unmatchedTracks.slice();
+    let stillUnmatchedDetIdx = stage1.unmatchedDetections.slice();
+
+    // 5. (Optional) BYTE stage — low-score dets ↔ stage-1-unmatched tracks.
+    //    No OCM, no fuse_score; just IoU/asoFunc-distance gated at iouThreshold.
+    if (this.useByte && low.length > 0 && stillUnmatchedTrackIdx.length > 0) {
+      const candTracks: OcSortInternalTrack<TPayload>[] = [];
+      for (const ti of stillUnmatchedTrackIdx) candTracks.push(trackArr[ti]!);
+      const stage2 = associateAsoFunc(
+        candTracks.map((t) => t.bbox),
+        low,
+        this.iouThreshold,
+        this.asoFunc,
+      );
+      const matchedTrackPositions = new Set<number>();
+      for (const [ci, di] of stage2.matched) {
+        const ti = stillUnmatchedTrackIdx[ci]!;
+        this.applyOcSortMatch(trackArr[ti]!, low[di]!);
+        matchedTrackPositions.add(ci);
+      }
+      const next: number[] = [];
+      for (let i = 0; i < stillUnmatchedTrackIdx.length; i++) {
+        if (!matchedTrackPositions.has(i)) next.push(stillUnmatchedTrackIdx[i]!);
+      }
+      stillUnmatchedTrackIdx = next;
+    }
+
+    // 6. OCR stage — match remaining unmatched HIGH dets against remaining
+    //    unmatched tracks' *last observation* (not Kalman prediction). Recovers
+    //    tracks whose Kalman state drifted out of IoU range during occlusion.
+    if (stillUnmatchedDetIdx.length > 0 && stillUnmatchedTrackIdx.length > 0) {
+      const eligible: { ti: number; lastObs: BBox }[] = [];
+      for (const ti of stillUnmatchedTrackIdx) {
+        const lo = trackArr[ti]!.lastObservation;
+        if (lo !== null) eligible.push({ ti, lastObs: lo });
+      }
+      if (eligible.length > 0) {
+        const ocrDets: Detection<TPayload>[] = [];
+        for (const di of stillUnmatchedDetIdx) ocrDets.push(high[di]!);
+        const stage3 = associateAsoFunc(
+          eligible.map((e) => e.lastObs),
+          ocrDets,
+          this.iouThreshold,
+          this.asoFunc,
+        );
+        const matchedTrackIds = new Set<number>();
+        const matchedDetPositions = new Set<number>();
+        for (const [ei, oi] of stage3.matched) {
+          const ti = eligible[ei]!.ti;
+          const di = stillUnmatchedDetIdx[oi]!;
+          this.applyOcSortMatch(trackArr[ti]!, high[di]!);
+          matchedTrackIds.add(ti);
+          matchedDetPositions.add(oi);
+        }
+        stillUnmatchedTrackIdx = stillUnmatchedTrackIdx.filter((ti) => !matchedTrackIds.has(ti));
+        const nextDets: number[] = [];
+        for (let i = 0; i < stillUnmatchedDetIdx.length; i++) {
+          if (!matchedDetPositions.has(i)) nextDets.push(stillUnmatchedDetIdx[i]!);
+        }
+        stillUnmatchedDetIdx = nextDets;
+      }
+    }
+
+    // 7. Mark remaining unmatched tracks as missed. `applyOcSortMiss` captures
+    //    the post-predict Kalman state as the ORU snapshot on the first miss
+    //    of an unobserved run (when `tsu === 0` going into this miss and a
+    //    `lastObservation` exists to roll back to).
+    for (const ti of stillUnmatchedTrackIdx) this.applyOcSortMiss(trackArr[ti]!);
+
+    // 8. Spawn fresh tracks for leftover unmatched HIGH-score detections.
+    //    BYTE-pool leftovers do not spawn (noahcao convention; low-score dets
+    //    are association-only). Score is already > detThresh by partition.
+    for (const di of stillUnmatchedDetIdx) this.spawnTrack(high[di]!);
+
+    // 9. Advance lifecycle. Cascade is intentional (each `if`, not `else if`):
+    //    a tentative track that misses past `maxAge` reaches `removed` in a
+    //    single pass, and a confirmed track that missed this frame falls to
+    //    `lost` and then potentially to `removed` if `maxAge === 0`.
+    for (const track of this.tracks.values()) {
+      if (track.state === 'tentative') {
+        if (track.timeSinceUpdate > this.maxAge) track.state = 'removed';
+        else if (track.hitStreak >= this.minHits) track.state = 'confirmed';
+      }
+      if (track.state === 'confirmed' && track.timeSinceUpdate > 0) {
+        track.state = 'lost';
+      }
+      if (track.state === 'lost' && track.timeSinceUpdate > this.maxAge) {
+        track.state = 'removed';
+      }
+    }
+
+    // 10. Sweep removed and export (warmup-aware; see {@link exportConfirmed}).
+    this.sweepRemoved();
+    return this.exportConfirmed();
+  }
+
+  /**
+   * Apply a successful (track, detection) match with OC-SORT-specific bookkeeping:
+   *
+   * 1. If the track was previously unmatched and we have an ORU snapshot,
+   *    roll the Kalman state back and replay a linearly-interpolated virtual
+   *    trajectory ending at the new detection ({@link runORU}). This happens
+   *    BEFORE the standard match-update so the post-update state has the
+   *    drift correction baked in.
+   * 2. Compute the new OCM velocity using the {@link _lookupVelocityPrev}
+   *    lookup, which mirrors noahcao's "oldest observation in the last
+   *    `deltaT` frames, falling back to `last_observation`" rule. Skipped on
+   *    the first match (when `lastObservation` is still `null`).
+   * 3. Standard match bookkeeping via {@link applyMatch}: KF update, counter
+   *    bumps, `lost → confirmed` transition.
+   * 4. Record the new observation in {@link observations} (keyed by current
+   *    age) and refresh {@link lastObservation} / {@link lastObservationAge}.
+   */
+  private applyOcSortMatch(
+    track: OcSortInternalTrack<TPayload>,
+    detection: Detection<TPayload>,
+  ): void {
+    if (
+      track.kalmanSnapshot !== null &&
+      track.lastObservation !== null &&
+      track.lastObservationAge >= 0
+    ) {
+      this.runORU(track, detection);
+    }
+
+    if (track.lastObservation !== null) {
+      const prevObs = this._lookupVelocityPrev(track);
+      track.velocity = _speedDirection(prevObs, detection.bbox);
+    }
+
+    this.applyMatch(track, detection);
+
+    track.lastObservation = detection.bbox;
+    track.observations.set(track.age, detection.bbox);
+    track.lastObservationAge = track.age;
+  }
+
+  /**
+   * Observation-Centric Re-update. Roll the Kalman state back to the
+   * pre-occlusion snapshot and replay a linearly-interpolated virtual
+   * trajectory of measurement updates between {@link lastObservation} and
+   * the new detection. Mirrors `KalmanFilterNew.unfreeze` in
+   * `OC_SORT/trackers/ocsort_tracker/kalmanfilter.py`:
+   *
+   * - The virtual trajectory has `timeGap = age - lastObservationAge` steps.
+   * - At each step `i ∈ [0, timeGap)`, a virtual box is computed by linear
+   *   interpolation from `lastObservation` (step 0) to `newDet.bbox`
+   *   (step `timeGap`).
+   * - The KF runs `update(virtualBox)` then `predict()`, except after the
+   *   last step where `predict()` is skipped (control returns to
+   *   {@link applyMatch}'s {@link updateTrack} call, which performs the final
+   *   update on the same `newDet.bbox`; this re-applies the latest virtual
+   *   update with the actual measurement, matching noahcao's behavior where
+   *   the recursive `update(new_box)` call leaves `observed = True` and the
+   *   outer `update(z)` call then proceeds with the standard KF math).
+   * - The snapshot is consumed and cleared after rollback.
+   */
+  private runORU(track: OcSortInternalTrack<TPayload>, newDet: Detection<TPayload>): void {
+    const snap = track.kalmanSnapshot!;
+    track.kalmanSnapshot = null;
+
+    const timeGap = track.age - track.lastObservationAge;
+    if (timeGap <= 0) {
+      // Safety: same-frame re-match shouldn't be reachable but if it is,
+      // just restore the snapshot and let the regular update math run.
+      track.kalmanState = snap;
+      return;
+    }
+
+    track.kalmanState = snap;
+
+    const [cx1, cy1, w1, h1] = _bboxCenterWH(track.lastObservation!);
+    const [cx2, cy2, w2, h2] = _bboxCenterWH(newDet.bbox);
+    const dcx = (cx2 - cx1) / timeGap;
+    const dcy = (cy2 - cy1) / timeGap;
+    const dw = (w2 - w1) / timeGap;
+    const dh = (h2 - h1) / timeGap;
+
+    for (let i = 0; i < timeGap; i++) {
+      const cx = cx1 + (i + 1) * dcx;
+      const cy = cy1 + (i + 1) * dcy;
+      const w = w1 + (i + 1) * dw;
+      const h = h1 + (i + 1) * dh;
+      const hw = w / 2;
+      const hh = h / 2;
+      const virtualBox: BBox = [cx - hw, cy - hh, cx + hw, cy + hh];
+      const measurement = xyxyToXysr(virtualBox);
+      track.kalmanState = this.kalmanFilter.update(track.kalmanState, measurement);
+      if (i !== timeGap - 1) {
+        track.kalmanState = this.kalmanFilter.predict(track.kalmanState);
+      }
+    }
+    track.bbox = xysrToXyxy(track.kalmanState.mean);
+  }
+
+  /**
+   * Mirror of noahcao's velocity-computation lookup
+   * (`KalmanBoxTracker.update`): walk `dt = deltaT, deltaT-1, ..., 1`,
+   * returning the FIRST observation found at `age - dt` (i.e. the oldest
+   * within the last `deltaT` frames). Falls back to `lastObservation` only
+   * when no observation exists in any age in `[age - deltaT, age - 1]`.
+   *
+   * Caller guarantees `lastObservation !== null`.
+   */
+  private _lookupVelocityPrev(track: OcSortInternalTrack<TPayload>): BBox {
+    for (let i = 0; i < this.deltaT; i++) {
+      const dt = this.deltaT - i;
+      const found = track.observations.get(track.age - dt);
+      if (found !== undefined) return found;
+    }
+    return track.lastObservation!;
+  }
+
+  /**
+   * Apply an unsuccessful match. On the FIRST miss of an unobserved run
+   * (when `tsu === 0` going in and a `lastObservation` exists), capture the
+   * current Kalman state — the post-predict state from this frame — as the
+   * ORU snapshot. Mirrors noahcao's `freeze()` being called once on the
+   * `observed → not observed` transition inside `KalmanFilterNew.update`.
+   */
+  private applyOcSortMiss(track: OcSortInternalTrack<TPayload>): void {
+    if (
+      track.timeSinceUpdate === 0 &&
+      track.lastObservation !== null &&
+      track.kalmanSnapshot === null
+    ) {
+      track.kalmanSnapshot = track.kalmanState;
+    }
+    this.applyMiss(track);
   }
 
   /**
@@ -333,12 +576,148 @@ export class OcSortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Module-scope helpers. Hoisted out of the class so they don't allocate a
+// closure per frame (CONTRIBUTING.md §3.4: no closures inside per-frame loops).
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface StageAssociationResult {
+  readonly matched: ReadonlyArray<readonly [number, number]>;
+  readonly unmatchedTracks: ReadonlyArray<number>;
+  readonly unmatchedDetections: ReadonlyArray<number>;
+}
+
 /**
- * Look up the OC-SORT extension state for a track that {@link initTrack} created.
- * Centralized so the rest of the module doesn't repeat the cast.
+ * Primary OC-SORT association: IoU cost augmented by the OCM angular term.
+ * The reference (`association.py:associate`) hard-codes IoU here even when
+ * `asoFunc='giou'`; this port preserves that asymmetry.
+ *
+ * For each (track, detection) pair:
+ *
+ * - Gate IoU < `iouThreshold` to `+Infinity` (ARCHITECTURE.md §5.6).
+ * - Otherwise `cost = (1 - IoU) - inertia * det.score * angularConsistency`,
+ *   where `angularConsistency ∈ [-0.5, +0.5]` is `(π/2 − |Δangle|) / π` of the
+ *   angle between the track's stored velocity and the direction from the
+ *   track's `kPreviousObs` observation to the detection center. The
+ *   contribution is zero when either the track has no velocity yet or the
+ *   `kPreviousObs` lookup returns null (`valid_mask = 0` in the reference).
  */
-function _ocState<TPayload>(track: InternalTrack<TPayload>): OcSortInternalTrack<TPayload> {
-  return track as OcSortInternalTrack<TPayload>;
+function associatePrimary<TPayload>(
+  tracks: ReadonlyArray<OcSortInternalTrack<TPayload>>,
+  dets: ReadonlyArray<Detection<TPayload>>,
+  iouThresh: number,
+  inertia: number,
+  deltaT: number,
+): StageAssociationResult {
+  const M = tracks.length;
+  const N = dets.length;
+  if (M === 0 || N === 0) return _emptyAssociation(M, N);
+
+  const trackBoxes: BBox[] = new Array(M);
+  for (let i = 0; i < M; i++) trackBoxes[i] = tracks[i]!.bbox;
+  const detBoxes: BBox[] = new Array(N);
+  for (let j = 0; j < N; j++) detBoxes[j] = dets[j]!.bbox;
+
+  const iou = iouMatrix(trackBoxes, detBoxes);
+  const cost = new Float64Array(M * N);
+
+  for (let i = 0; i < M; i++) {
+    const track = tracks[i]!;
+    const kPrev = _kPreviousObs(track.observations, track.age, deltaT);
+    const vel = track.velocity; // may be null
+    const ocmActive = inertia > 0 && vel !== null && kPrev !== null;
+    for (let j = 0; j < N; j++) {
+      const iouVal = iou[i * N + j]!;
+      if (iouVal < iouThresh) {
+        cost[i * N + j] = Number.POSITIVE_INFINITY;
+        continue;
+      }
+      let c = 1 - iouVal;
+      if (ocmActive) {
+        const dir = _speedDirection(kPrev!, dets[j]!.bbox);
+        // vel and dir are both [dy, dx]; their dot product is cos(Δangle).
+        let cosAng = vel![0] * dir[0] + vel![1] * dir[1];
+        if (cosAng > 1) cosAng = 1;
+        else if (cosAng < -1) cosAng = -1;
+        const ang = Math.acos(cosAng);
+        const diffAng = (Math.PI / 2 - Math.abs(ang)) / Math.PI;
+        c -= inertia * dets[j]!.score * diffAng;
+      }
+      cost[i * N + j] = c;
+    }
+  }
+
+  return _solveAndPackage(cost, M, N);
+}
+
+/**
+ * BYTE / OCR association: pure `asoFunc`-distance cost, gated at `iouThresh`.
+ * Mirrors `OCSort.update`'s post-primary stages, where `self.asso_func` is
+ * applied without the OCM term.
+ *
+ * The gating threshold is the `asoFunc` value (not raw IoU) — for `'giou'`,
+ * `giouMatrix` returns the un-normalized GIoU in `[-1, +1]` (see
+ * `geometry/iou.ts`), and this stage normalizes it to `[0, 1]` first
+ * (`(giou + 1) / 2`, matching `association.py:giou_batch`) so that
+ * `iouThresh = 0.3` continues to mean "30% normalized score."
+ */
+function associateAsoFunc<TPayload>(
+  trackBoxes: ReadonlyArray<BBox>,
+  dets: ReadonlyArray<Detection<TPayload>>,
+  iouThresh: number,
+  asoFunc: OcSortAsoFunc,
+): StageAssociationResult {
+  const M = trackBoxes.length;
+  const N = dets.length;
+  if (M === 0 || N === 0) return _emptyAssociation(M, N);
+
+  const detBoxes: BBox[] = new Array(N);
+  for (let j = 0; j < N; j++) detBoxes[j] = dets[j]!.bbox;
+
+  let score: Float64Array;
+  if (asoFunc === 'giou') {
+    const raw = giouMatrix(trackBoxes, detBoxes);
+    score = new Float64Array(raw.length);
+    for (let i = 0; i < raw.length; i++) score[i] = (raw[i]! + 1) / 2;
+  } else {
+    score = iouMatrix(trackBoxes, detBoxes);
+  }
+
+  const cost = new Float64Array(M * N);
+  for (let i = 0; i < M * N; i++) {
+    const s = score[i]!;
+    cost[i] = s < iouThresh ? Number.POSITIVE_INFINITY : 1 - s;
+  }
+
+  return _solveAndPackage(cost, M, N);
+}
+
+function _solveAndPackage(cost: Float64Array, M: number, N: number): StageAssociationResult {
+  const { rowToCol } = solveLsap(cost, M, N);
+  const matched: Array<[number, number]> = [];
+  const matchedTracks = new Uint8Array(M);
+  const matchedDets = new Uint8Array(N);
+  for (let i = 0; i < M; i++) {
+    const j = rowToCol[i]!;
+    if (j !== -1) {
+      matched.push([i, j]);
+      matchedTracks[i] = 1;
+      matchedDets[j] = 1;
+    }
+  }
+  const unmatchedTracks: number[] = [];
+  for (let i = 0; i < M; i++) if (matchedTracks[i] === 0) unmatchedTracks.push(i);
+  const unmatchedDetections: number[] = [];
+  for (let j = 0; j < N; j++) if (matchedDets[j] === 0) unmatchedDetections.push(j);
+  return { matched, unmatchedTracks, unmatchedDetections };
+}
+
+function _emptyAssociation(M: number, N: number): StageAssociationResult {
+  const ut: number[] = new Array(M);
+  for (let i = 0; i < M; i++) ut[i] = i;
+  const ud: number[] = new Array(N);
+  for (let j = 0; j < N; j++) ud[j] = j;
+  return { matched: [], unmatchedTracks: ut, unmatchedDetections: ud };
 }
 
 /**
@@ -378,14 +757,9 @@ function _kPreviousObs(observations: Map<number, BBox>, curAge: number, k: numbe
   return observations.get(maxAge) ?? null;
 }
 
-// Module-scope exports of the helpers kept private for now. When the
-// implementation commit lands they become callable from the per-frame
-// pipeline; the scaffold references them only to anchor JSDoc cross-links.
-export const __internals__ = { _ocState, _speedDirection, _kPreviousObs };
-
-// Module-scope use-marker for the otherwise-unused matrix imports during the
-// scaffold; the implementation commit threads them into the primary /
-// OCR cost-matrix construction. Without this reference, TS would flag the
-// imports as dead even though they are required by the impl.
-const _scaffoldImportAnchor = { iouMatrix, giouMatrix, solveLsap } as const;
-void _scaffoldImportAnchor;
+/** Convert a `[x1, y1, x2, y2]` bbox to `[cx, cy, w, h]`. */
+function _bboxCenterWH(bbox: BBox): [number, number, number, number] {
+  const w = bbox[2] - bbox[0];
+  const h = bbox[3] - bbox[1];
+  return [bbox[0] + w / 2, bbox[1] + h / 2, w, h];
+}
