@@ -79,6 +79,25 @@ describe('SortTracker invariants', () => {
     );
   });
 
+  it('timeSinceUpdate equals exactly N after N consecutive missed frames', () => {
+    // Direct check of the ADR-0003 §1 exactly-once invariant: each missed
+    // frame must advance tsu by exactly 1. A doubled-applyMiss bug would
+    // make this fire at N=1 (observed tsu=2). maxAge=100 keeps the track
+    // lost across the full N range so we never sample after removal.
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 20 }), positiveBBox, (n, bbox) => {
+        const t = new SortTracker({ minHits: 1, maxAge: 100 });
+        t.update([{ bbox, score: 0.9 }]); // frame 1: spawn (tentative)
+        t.update([{ bbox, score: 0.9 }]); // frame 2: match → confirmed (hitStreak=1 ≥ minHits=1)
+        for (let i = 0; i < n; i++) t.update([]);
+        const lost = t.getLostTracks();
+        expect(lost).toHaveLength(1);
+        expect(lost[0]?.timeSinceUpdate).toBe(n);
+      }),
+      { numRuns: 30 },
+    );
+  });
+
   it('nextId never decreases across frames', () => {
     fc.assert(
       fc.property(fc.array(fc.array(detection, { maxLength: 4 }), { maxLength: 10 }), (frames) => {

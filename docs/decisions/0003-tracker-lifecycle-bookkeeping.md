@@ -157,6 +157,8 @@ Existing examples:
 - `packages/core/tests/unit/bytetrack.test.ts` — block `'ByteTracker — lost-track retention (trackBuffer)'`, test `'advances timeSinceUpdate by exactly 1 per missed frame for a confirmed-then-lost track'`.
 - `packages/core/tests/unit/sort-tracker.test.ts` — block `'SortTracker — lifecycle on missed frames'`, parallel test for symmetry. SortTracker is single-stage and currently cannot exhibit the bug, but the test guards against future regressions if `runStandardLifecycle` ever grows a second `applyMiss` site.
 
+In addition to the per-tracker unit test, each tracker's property-test file (`tests/property/{sort,bytetrack,ocsort}-tracker.property.test.ts`) carries a `fast-check`-driven generalization — `'timeSinceUpdate equals exactly N after N consecutive missed frames'` — that probes the invariant across N ∈ [1, 20] and random bbox shapes. The property formulation catches the same bug class as the unit test plus any edge cases the hand-picked retention window in the unit test happens to miss.
+
 ---
 
 ## 5. Why this isn't a typing rule
@@ -174,8 +176,7 @@ A natural reaction is "can we encode §1 in the type system?" — e.g. make `app
 | Item | When to revisit |
 |---|---|
 | `__DEBUG__`-mode invariant checker in `BaseTracker` | If the bug recurs after this ADR is in place, or if a tracker PR omits the §4 test and reviewers want a compile-time net. |
-| Property-based test asserting `tsu === N after N misses` across `fast-check`-generated bbox sequences | After OC-SORT lands; the property formulation is more useful when there are 3+ trackers to test it against. |
-| Cross-implementation snapshot tests against `byte_tracker.py` / `OC_SORT/*.py` outputs (ARCHITECTURE.md §10.5, §13.3) | At OC-SORT scaffold time. The validation/ directory is the strongest long-term defense against this entire bug class and is the right time to stand up. |
+| ByteTracker sister fixture vs. `byte_tracker.py` (analog of `ocsort-noahcao/` and `sort-abewley/`) | When the same `exportConfirmed` / lifecycle-bookkeeping class of bug needs the same level of defense for ByteTracker. The harness from the two existing sister fixtures transfers verbatim; only `gen.py` and the sequence design change. |
 
 ---
 
