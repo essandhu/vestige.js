@@ -201,24 +201,31 @@ export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
   };
 
   /**
-   * sort.py's observable export rule:
+   * sort.py's observable export rule (`sort.py:Sort.update`):
    *
    * ```python
    * (time_since_update < 1) and (hit_streak >= min_hits or frame_count <= min_hits)
    * ```
    *
-   * In our explicit lifecycle: confirmed tracks matched this frame are always
-   * output; during the first `minHits` frames, *tentative* tracks matched
-   * this frame are also output (the "warmup" clause). This is what lets a
-   * detection appear in the very first frame's result without waiting
-   * `minHits` consecutive frames for confirmation.
+   * The condition is gated on `hit_streak`, not on the explicit lifecycle
+   * `state`. The two are NOT equivalent for re-found tracks: a confirmed
+   * track that misses one frame has `hit_streak = 0` after the miss (set in
+   * {@link applyMiss}). On re-association the standard `applyMatch` bumps
+   * `hit_streak` back to 1, and sort.py requires `min_hits` more matches
+   * before re-emitting the track. The `sort-abewley/` fixture exercises this
+   * gap directly; OcSortTracker's `exportConfirmed` mirrors the same rule
+   * for the same reason.
+   *
+   * The `warmup` clause (`frame_count <= min_hits`) is what lets a detection
+   * appear in the very first frame's result without waiting `minHits`
+   * consecutive frames for confirmation.
    */
   protected override exportConfirmed(): Track<TPayload>[] {
     const out: Track<TPayload>[] = [];
     const warmup = this._frameIndex <= this.minHits;
     for (const track of this.tracks.values()) {
       if (track.timeSinceUpdate !== 0) continue;
-      if (track.state === 'confirmed' || (warmup && track.state === 'tentative')) {
+      if (track.hitStreak >= this.minHits || warmup) {
         out.push(this.materializeTrack(track));
       }
     }
