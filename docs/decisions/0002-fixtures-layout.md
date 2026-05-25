@@ -2,7 +2,7 @@
 
 - **Date:** 2026-05-24
 - **Status:** Draft — to be finalized as the first fixture-needing function (`cholesky`) is implemented
-- **Scope:** Conventions for per-function Python oracle fixtures (CONTRIBUTING.md §4 / ARCHITECTURE.md §13.1). Does **not** cover sequence-level tracker validation (ARCHITECTURE.md §13.3), which is deferred until v0.1 trackers exist.
+- **Scope:** Conventions for Python oracle fixtures (CONTRIBUTING.md §4 / ARCHITECTURE.md §13.1). The conventions cover both per-function numerical oracles (the original motivating case — `kalman-update/`) and sequence-level cross-implementation tracker fixtures (added later — `ocsort-noahcao/`, `sort-abewley/`). Same envelope shape, same regeneration workflow; the latter just adds an extra setup step to clone the reference repo at a pinned commit.
 
 ## Context
 
@@ -12,10 +12,11 @@ ADR 0001 §5.1 anticipated this:
 
 The next scaffold layer (`linalg.ts` — `matMul`, `cholesky`, `choleskySolve`) is the inflection point where hand-computed oracles stop scaling. Settling the directory layout, naming, dependency pinning, and re-generation workflow **before** the first fixture lands means every subsequent function (Kalman, Hungarian) just follows the pattern instead of relitigating it.
 
-Two things are explicitly **not** in scope:
+One thing is explicitly **not** in scope:
 
-1. **Sequence-level validation** (ARCHITECTURE §13.3) — `validation/` directory with pre-computed Python tracker outputs on fixed MOT sequences. Premature; no tracker exists yet.
-2. **Python in CI** — the fixture JSON is committed; CI reads it. Python only runs locally when the maintainer regenerates.
+- **Python in CI** — the fixture JSON is committed; CI reads it. Python only runs locally when the maintainer regenerates.
+
+(The original draft also deferred sequence-level cross-implementation fixtures; that scope was later folded back in once the first such fixture, `ocsort-noahcao/`, landed in PR #14. See §6.)
 
 ---
 
@@ -168,7 +169,6 @@ Single import, single iteration. Hand-written assertions only when the fixture f
 | `pnpm fixtures:check-hashes` script | If a stale-script bug actually bites once. |
 | Python in CI to verify scripts still produce committed JSON | Only if maintainer drift becomes a recurring problem; the cost (CI complexity, slower runs) probably exceeds the value. |
 | Backfilling a CIoU fixture | Cheap, but not urgent — current property tests cover the bound/symmetry properties, and a single REPL-derived numeric constant inline in the test gives most of the value of a full fixture for far less ceremony. Bundle into the linalg PR or skip. |
-| Sequence-level `validation/` directory (ARCHITECTURE §13.3) | When v0.1 trackers exist and there's something to validate against. |
 
 ---
 
