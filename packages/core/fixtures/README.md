@@ -39,3 +39,4 @@ external reference repo) document their setup in their per-fixture README.
 |---|---|---|
 | `kalman-update/` | `tests/unit/cv-xyah-fixture.test.ts` — cv-xyah KF predict+update oracles | none |
 | `ocsort-noahcao/` | `tests/validation/ocsort-noahcao-fixture.test.ts` — cross-implementation faithfulness vs. `noahcao/OC_SORT` | clone `noahcao/OC_SORT` at the pinned commit (see fixture README) |
+| `sort-abewley/` | `tests/validation/sort-abewley-fixture.test.ts` — cross-implementation faithfulness vs. `abewley/sort` | clone `abewley/sort` at the pinned commit (see fixture README) |

@@ -23,6 +23,7 @@ This is **distinct from**:
 |---|---|---|
 | `ocsort-synthetic.test.ts` | `OcSortTracker` | ORU (occlusion → re-association drift correction), OCM (directional cost), OCR (last-observation rescue) — see paper §3.2–3.4. Hand-traced expected outcomes. |
 | `ocsort-noahcao-fixture.test.ts` | `OcSortTracker` | Per-frame parity with `noahcao/OC_SORT` on a 60-frame synthetic sequence. See `packages/core/fixtures/ocsort-noahcao/README.md` for the sequence design and regeneration workflow. |
+| `sort-abewley-fixture.test.ts` | `SortTracker` | Per-frame parity with `abewley/sort` on a 60-frame synthetic sequence engineered around SortTracker's default `maxAge=1` occlusion window. See `packages/core/fixtures/sort-abewley/README.md` for the sequence design and regeneration workflow. |
 
 ## When to add a validation test
 
