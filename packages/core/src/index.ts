@@ -1,9 +1,10 @@
+export type { ByteTrackerOptions } from './trackers/bytetrack.js';
+export { ByteTracker } from './trackers/bytetrack.js';
 export type { SortTrackerOptions } from './trackers/sort.js';
 export { SortTracker } from './trackers/sort.js';
 export type { BBox, Detection, Track, Tracker, TrackState } from './types.js';
 
 // Additional trackers are exported here as they land:
-//   export { ByteTracker } from './trackers/bytetrack.js';
 //   export { OcSortTracker } from './trackers/ocsort.js';
 //   export { BotSortTracker } from './trackers/botsort.js';
 //
