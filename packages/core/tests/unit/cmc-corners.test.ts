@@ -26,10 +26,11 @@ describe('sampleBilinear', () => {
   });
 
   it('interpolates linearly between samples', () => {
+    // The image is exactly the plane 10x + 20y, which bilinear reproduces.
     expect(sampleBilinear(img, 0.5, 0)).toBeCloseTo(5, 12);
     expect(sampleBilinear(img, 0, 0.5)).toBeCloseTo(10, 12);
     expect(sampleBilinear(img, 0.5, 0.5)).toBeCloseTo(15, 12);
-    expect(sampleBilinear(img, 0.25, 0.75)).toBeCloseTo(0.25 * (1 - 0.75) * 10 + 17.5, 12);
+    expect(sampleBilinear(img, 0.25, 0.75)).toBeCloseTo(17.5, 12);
   });
 
   it('clamps out-of-range coordinates to the edge', () => {
