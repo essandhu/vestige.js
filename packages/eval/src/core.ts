@@ -8,8 +8,7 @@
  * intra-monorepo convenience for a private package; nothing here widens the
  * public API of `vestige.js`. See `docs/decisions/0004-eval-package.md`.
  */
-export { iou, iouMatrix } from '../../core/src/geometry/iou.js';
-export type { LsapResult } from '../../core/src/solvers/hungarian.js';
+export { iouMatrix } from '../../core/src/geometry/iou.js';
 export { solveLsap } from '../../core/src/solvers/hungarian.js';
 export { SortTracker } from '../../core/src/trackers/sort.js';
 export type { BBox, Detection, Track, Tracker } from '../../core/src/types.js';

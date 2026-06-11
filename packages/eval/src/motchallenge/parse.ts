@@ -37,8 +37,42 @@ export interface MotEntry {
  * det files) are ignored. A row with fewer than 7 fields or a non-numeric
  * field throws (`/malformed/i`).
  */
-export function parseMotChallenge(_text: string): MotEntry[] {
-  throw new Error('not implemented');
+export function parseMotChallenge(text: string): MotEntry[] {
+  const out: MotEntry[] = [];
+  const lines = text.split('\n');
+  for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+    const line = (lines[lineNo] ?? '').trim();
+    if (line === '') continue;
+
+    const fields = line.split(',');
+    if (fields.length < 7) {
+      throw new Error(
+        `malformed MOTChallenge line ${lineNo + 1}: expected at least 7 fields, got ${fields.length}`,
+      );
+    }
+
+    const values: number[] = [];
+    const numericFields = Math.min(fields.length, 9);
+    for (let i = 0; i < numericFields; i++) {
+      const field = (fields[i] ?? '').trim();
+      const value = Number(field);
+      if (field === '' || !Number.isFinite(value)) {
+        throw new Error(`malformed MOTChallenge line ${lineNo + 1}: non-numeric field '${field}'`);
+      }
+      values.push(value);
+    }
+
+    const [frame = 0, id = 0, left = 0, top = 0, width = 0, height = 0, score = 0] = values;
+    out.push({
+      frame,
+      id,
+      bbox: [left, top, left + width, top + height],
+      score,
+      classId: values[7] ?? -1,
+      visibility: values[8] ?? -1,
+    });
+  }
+  return out;
 }
 
 /**
@@ -53,8 +87,18 @@ export function parseMotChallenge(_text: string): MotEntry[] {
  * doesn't bloat result files; `parseMotChallenge(formatMotChallenge(e))`
  * round-trips frame/id exactly and geometry to within 1e-6.
  */
-export function formatMotChallenge(_entries: ReadonlyArray<MotEntry>): string {
-  throw new Error('not implemented');
+export function formatMotChallenge(entries: ReadonlyArray<MotEntry>): string {
+  let out = '';
+  for (const e of entries) {
+    const [x1, y1, x2, y2] = e.bbox;
+    const fields = [e.frame, e.id, x1, y1, x2 - x1, y2 - y1, e.score, e.classId, e.visibility];
+    out += `${fields.map(formatNumber).join(',')},-1\n`;
+  }
+  return out;
+}
+
+function formatNumber(value: number): string {
+  return String(Math.round(value * 1e6) / 1e6);
 }
 
 /**
@@ -76,8 +120,14 @@ export interface GtFilterOptions {
 }
 
 /** Apply {@link GtFilterOptions} to parsed gt entries; returns a new array. */
-export function filterGt(_entries: ReadonlyArray<MotEntry>, _options: GtFilterOptions): MotEntry[] {
-  throw new Error('not implemented');
+export function filterGt(entries: ReadonlyArray<MotEntry>, options: GtFilterOptions): MotEntry[] {
+  const { requireConsidered = false, classIds, minVisibility } = options;
+  return entries.filter((e) => {
+    if (requireConsidered && e.score === 0) return false;
+    if (classIds !== undefined && !classIds.includes(e.classId)) return false;
+    if (minVisibility !== undefined && e.visibility < minVisibility) return false;
+    return true;
+  });
 }
 
 /**
@@ -90,8 +140,20 @@ export function filterGt(_entries: ReadonlyArray<MotEntry>, _options: GtFilterOp
  * absent-marker `-1`.
  */
 export function detectionsByFrame(
-  _entries: ReadonlyArray<MotEntry>,
-  _numFrames?: number,
+  entries: ReadonlyArray<MotEntry>,
+  numFrames?: number,
 ): Detection[][] {
-  throw new Error('not implemented');
+  let maxFrame = 0;
+  for (const e of entries) maxFrame = Math.max(maxFrame, e.frame);
+  const n = numFrames ?? maxFrame;
+
+  const out: Detection[][] = Array.from({ length: n }, () => []);
+  for (const e of entries) {
+    const frame = out[e.frame - 1];
+    if (frame === undefined) continue;
+    const det: Detection = { bbox: e.bbox, score: e.score };
+    if (e.classId !== -1) det.classId = e.classId;
+    frame.push(det);
+  }
+  return out;
 }

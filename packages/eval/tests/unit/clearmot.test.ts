@@ -89,7 +89,7 @@ describe('clearMot', () => {
     // Single frame: gt [0,0,10,10] vs tracker [4,0,14,10] → inter 60,
     // union 140, IoU = 3/7 ≈ 0.4286 < 0.5 → unmatched.
     // TP = 0, FN = 1, FP = 1 → MOTA = 1 - 2/1 = -1; MOTP over 0 TPs = 0.
-    const r = clearMot([frame([[1, box(0, 0, 10, 10)]], [[1, box(4, 0, 14, 10)]])]);
+    const r = clearMot([frame([[1, box(0, 0, 10, 10)]], [[1, box(4, 0, 10, 10)]])]);
     expect(r.tp).toBe(0);
     expect(r.fn).toBe(1);
     expect(r.fp).toBe(1);
@@ -99,7 +99,7 @@ describe('clearMot', () => {
 
   it('honors a custom simThreshold', () => {
     // Same geometry as above, threshold 0.3 → IoU 3/7 ≥ 0.3 is now a match.
-    const r = clearMot([frame([[1, box(0, 0, 10, 10)]], [[1, box(4, 0, 14, 10)]])], {
+    const r = clearMot([frame([[1, box(0, 0, 10, 10)]], [[1, box(4, 0, 10, 10)]])], {
       simThreshold: 0.3,
     });
     expect(r.tp).toBe(1);

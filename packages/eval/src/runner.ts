@@ -1,4 +1,4 @@
-import type { Detection, Track, Tracker } from './core.js';
+import type { BBox, Detection, Track, Tracker } from './core.js';
 import type { EvalFrame } from './metrics/frames.js';
 import type { MotEntry } from './motchallenge/parse.js';
 
@@ -12,10 +12,14 @@ import type { MotEntry } from './motchallenge/parse.js';
  * evaluation run.
  */
 export function runTracker<TPayload>(
-  _tracker: Tracker<TPayload>,
-  _detectionsPerFrame: ReadonlyArray<ReadonlyArray<Detection<TPayload>>>,
+  tracker: Tracker<TPayload>,
+  detectionsPerFrame: ReadonlyArray<ReadonlyArray<Detection<TPayload>>>,
 ): Track<TPayload>[][] {
-  throw new Error('not implemented');
+  const out: Track<TPayload>[][] = [];
+  for (const detections of detectionsPerFrame) {
+    out.push(tracker.update(detections));
+  }
+  return out;
 }
 
 /**
@@ -26,9 +30,22 @@ export function runTracker<TPayload>(
  * `visibility` is the absent-marker `-1`.
  */
 export function tracksToMotEntries(
-  _tracksPerFrame: ReadonlyArray<ReadonlyArray<Track<unknown>>>,
+  tracksPerFrame: ReadonlyArray<ReadonlyArray<Track<unknown>>>,
 ): MotEntry[] {
-  throw new Error('not implemented');
+  const entries: MotEntry[] = [];
+  for (let f = 0; f < tracksPerFrame.length; f++) {
+    for (const track of tracksPerFrame[f] ?? []) {
+      entries.push({
+        frame: f + 1,
+        id: track.id,
+        bbox: track.bbox,
+        score: track.score,
+        classId: track.classId ?? -1,
+        visibility: -1,
+      });
+    }
+  }
+  return entries;
 }
 
 /**
@@ -39,9 +56,39 @@ export function tracksToMotEntries(
  * entries keep their input order.
  */
 export function evalFramesFromEntries(
-  _gt: ReadonlyArray<MotEntry>,
-  _tracker: ReadonlyArray<MotEntry>,
-  _numFrames?: number,
+  gt: ReadonlyArray<MotEntry>,
+  tracker: ReadonlyArray<MotEntry>,
+  numFrames?: number,
 ): EvalFrame[] {
-  throw new Error('not implemented');
+  let maxFrame = 0;
+  for (const e of gt) maxFrame = Math.max(maxFrame, e.frame);
+  for (const e of tracker) maxFrame = Math.max(maxFrame, e.frame);
+  const n = numFrames ?? maxFrame;
+
+  interface MutableFrame {
+    gtIds: number[];
+    gtBoxes: BBox[];
+    trackIds: number[];
+    trackBoxes: BBox[];
+  }
+  const frames: MutableFrame[] = Array.from({ length: n }, () => ({
+    gtIds: [],
+    gtBoxes: [],
+    trackIds: [],
+    trackBoxes: [],
+  }));
+
+  for (const e of gt) {
+    const frame = frames[e.frame - 1];
+    if (frame === undefined) continue;
+    frame.gtIds.push(e.id);
+    frame.gtBoxes.push(e.bbox);
+  }
+  for (const e of tracker) {
+    const frame = frames[e.frame - 1];
+    if (frame === undefined) continue;
+    frame.trackIds.push(e.id);
+    frame.trackBoxes.push(e.bbox);
+  }
+  return frames;
 }

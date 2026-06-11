@@ -135,6 +135,41 @@ describe('hota', () => {
     expect(r.hota).toBeCloseTo(Math.sqrt(1 / 3), 12);
   });
 
+  it('breaks per-frame similarity ties with the global alignment score', () => {
+    // 1 gt × 10 frames. Tracker id 1 overlaps at IoU 0.6 in every frame;
+    // tracker id 2 appears only in f6–10 at the *same* box (same IoU 0.6).
+    // Pass 1: potential(gt,1) = 5·1 + 5·0.5 = 7.5 → align = 7.5/12.5 = 0.6;
+    // potential(gt,2) = 2.5 → align = 2.5/12.5 = 0.2. So f6–10 match id 1
+    // (score 0.36 > 0.12) despite the per-frame IoU tie.
+    // Alphas ≤ 0.6: TP = 10 (all on id 1), FP = 5 (id 2) → DetA = 2/3;
+    // matches(gt,1) = 10 → A(c) = 10/(10+10−10) = 1 → AssA = 1;
+    // HOTA = √(2/3). A per-frame-greedy matcher that split the matches
+    // between the two ids would read AssA ≈ 0.5 instead.
+    const g = box(0, 0, 10, 10);
+    const t = box(0, 2.5, 10, 10);
+    const frames = [
+      ...Array.from({ length: 5 }, () => frame([[1, g]], [[1, t]])),
+      ...Array.from({ length: 5 }, () =>
+        frame(
+          [[1, g]],
+          [
+            [1, t],
+            [2, t],
+          ],
+        ),
+      ),
+    ];
+
+    const r = hota(frames);
+    for (let k = 0; k < 19; k++) {
+      const matched = (k + 1) / 20 <= 0.6;
+      expect(r.detaPerAlpha[k]).toBeCloseTo(matched ? 2 / 3 : 0, 12);
+      expect(r.assaPerAlpha[k]).toBeCloseTo(matched ? 1 : 0, 12);
+      expect(r.hotaPerAlpha[k]).toBeCloseTo(matched ? Math.sqrt(2 / 3) : 0, 12);
+    }
+    expect(r.hota).toBeCloseTo((12 * Math.sqrt(2 / 3)) / 19, 12);
+  });
+
   it('throws on a sequence with no ground-truth detections', () => {
     expect(() => hota([frame([], [[1, box(0, 0, 10, 10)]])])).toThrow(/ground[\s-]?truth/i);
   });

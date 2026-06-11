@@ -74,7 +74,7 @@ describe('identity', () => {
     // Tracker box [4,0,14,10] vs gt [0,0,10,10]: IoU 3/7 ≈ 0.4286.
     // Below the 0.5 default → no agreement; at 0.3 → full agreement.
     const frames = Array.from({ length: 4 }, () =>
-      frame([[1, box(0, 0, 10, 10)]], [[1, box(4, 0, 14, 10)]]),
+      frame([[1, box(0, 0, 10, 10)]], [[1, box(4, 0, 10, 10)]]),
     );
     expect(identity(frames).idtp).toBe(0);
     expect(identity(frames, { simThreshold: 0.3 }).idtp).toBe(4);
