@@ -93,8 +93,18 @@ adds nothing to the published API.
 
 `filterGt` covers the consider-flag, class, and visibility filters. TrackEval's
 full MOT17 preprocessing additionally **removes tracker detections that match
-distractor-class gt** (and crowd-ignore regions) before scoring. That step is
-not implemented yet; until it is, numbers computed on real MOT17 gt files will
-read slightly lower than the leaderboard's. This is the known gap to close
-before claiming §10.4 acceptance-window numbers, and it belongs in the loader
-layer, not the metrics.
+distractor-class gt** before scoring. That step was not implemented when this
+ADR was written; until it was, numbers computed on real MOT17 gt files would
+read slightly lower than the leaderboard's. It belongs in the loader layer,
+not the metrics.
+
+**Status update:** closed by `motchallenge/preprocess.ts`
+(`preprocessMotSequence`), which ports TrackEval's
+`get_preprocessed_seq_data` (distractor matching + zero-mark/class gt
+filtering; MOT Challenge has no crowd-ignore regions per TrackEval's own
+docstring). The whole parse → preprocess → metrics pipeline is pinned against
+a TrackEval-generated fixture (`packages/eval/fixtures/trackeval-preproc/`),
+which also serves as the §1 cross-implementation check the metrics previously
+lacked. Remaining before §10.4 numbers: real MOT17 sequence data + the
+detector-file download story (ARCHITECTURE.md §16.2) and multi-sequence
+pooling (§2 above).

@@ -1,3 +1,4 @@
+import { iouMatrix, solveLsap } from '../core.js';
 import type { EvalFrame } from '../metrics/frames.js';
 import type { MotEntry } from './parse.js';
 
@@ -67,9 +68,97 @@ export interface MotPreprocessOptions {
  * output on a synthetic sequence.
  */
 export function preprocessMotSequence(
-  _gt: ReadonlyArray<MotEntry>,
-  _tracker: ReadonlyArray<MotEntry>,
-  _options?: MotPreprocessOptions,
+  gt: ReadonlyArray<MotEntry>,
+  tracker: ReadonlyArray<MotEntry>,
+  options?: MotPreprocessOptions,
 ): EvalFrame[] {
-  throw new Error('not implemented');
+  const classId = options?.classId ?? 1;
+  const distractorClassIds = options?.distractorClassIds ?? MOT17_DISTRACTOR_CLASS_IDS;
+  const validClassIds = options?.validClassIds ?? MOT_VALID_CLASS_IDS;
+  const threshold = options?.simThreshold ?? 0.5;
+
+  let maxFrame = 0;
+  for (const e of gt) maxFrame = Math.max(maxFrame, e.frame);
+  for (const e of tracker) maxFrame = Math.max(maxFrame, e.frame);
+  const numFrames = options?.numFrames ?? maxFrame;
+
+  const gtByFrame = groupByFrame(gt, numFrames);
+  const trackByFrame = groupByFrame(tracker, numFrames);
+
+  const out: EvalFrame[] = [];
+  for (let f = 0; f < numFrames; f++) {
+    const gtFrame = gtByFrame[f] ?? [];
+    const trackFrame = trackByFrame[f] ?? [];
+
+    // Step 2 (mot_challenge_2d_box.py:358-381): match tracker dets against
+    // ALL gt boxes regardless of class; tracker dets matched (IoU ≥ threshold)
+    // to a distractor-class gt are removed. TrackEval only runs this — and
+    // the gt class validation guarding it — when both sides are non-empty.
+    const removed = new Set<number>();
+    if (gtFrame.length > 0 && trackFrame.length > 0) {
+      const invalid = [
+        ...new Set(gtFrame.map((e) => e.classId).filter((c) => !validClassIds.includes(c))),
+      ];
+      if (invalid.length > 0) {
+        throw new Error(
+          `frame ${f + 1}: invalid gt classes for MOT preprocessing: ${invalid.join(', ')}`,
+        );
+      }
+
+      const m = gtFrame.length;
+      const n = trackFrame.length;
+      const sim = iouMatrix(
+        gtFrame.map((e) => e.bbox),
+        trackFrame.map((e) => e.bbox),
+      );
+      // Sub-threshold pairs are zeroed (not forbidden) exactly like
+      // TrackEval's `matching_scores`; the maximization is phrased as a
+      // minimization over cost = 1 − score for the JV solver, and selected
+      // zero-score pairs are discarded afterwards.
+      const cost = new Float64Array(m * n);
+      for (let i = 0; i < m; i++) {
+        for (let j = 0; j < n; j++) {
+          const s = sim[i * n + j] ?? 0;
+          cost[i * n + j] = 1 - (s >= threshold - Number.EPSILON ? s : 0);
+        }
+      }
+      const { rowToCol } = solveLsap(cost, m, n);
+      for (let i = 0; i < m; i++) {
+        const j = rowToCol[i] ?? -1;
+        if (j === -1) continue;
+        if (1 - (cost[i * n + j] ?? 1) <= Number.EPSILON) continue;
+        if (distractorClassIds.includes(gtFrame[i]?.classId ?? -1)) removed.add(j);
+      }
+    }
+
+    // Step 4: keep only considered (`zero_marked != 0`, integer-truncated
+    // like TrackEval's astype(int)) gt rows of the evaluated class.
+    const gtIds: number[] = [];
+    const gtBoxes: EvalFrame['gtBoxes'][number][] = [];
+    for (const e of gtFrame) {
+      if (Math.trunc(e.score) !== 0 && e.classId === classId) {
+        gtIds.push(e.id);
+        gtBoxes.push(e.bbox);
+      }
+    }
+    const trackIds: number[] = [];
+    const trackBoxes: EvalFrame['trackBoxes'][number][] = [];
+    for (let j = 0; j < trackFrame.length; j++) {
+      const e = trackFrame[j];
+      if (e !== undefined && !removed.has(j)) {
+        trackIds.push(e.id);
+        trackBoxes.push(e.bbox);
+      }
+    }
+    out.push({ gtIds, gtBoxes, trackIds, trackBoxes });
+  }
+  return out;
+}
+
+function groupByFrame(entries: ReadonlyArray<MotEntry>, numFrames: number): MotEntry[][] {
+  const out: MotEntry[][] = Array.from({ length: numFrames }, () => []);
+  for (const e of entries) {
+    out[e.frame - 1]?.push(e);
+  }
+  return out;
 }
