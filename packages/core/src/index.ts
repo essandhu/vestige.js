@@ -1,3 +1,9 @@
+export type {
+  CmcProvider,
+  GrayFrame,
+  SparseOpticalFlowCmcOptions,
+} from './plugins/cmc.js';
+export { SparseOpticalFlowCmc, warpBBox } from './plugins/cmc.js';
 export type { ByteTrackerOptions } from './trackers/bytetrack.js';
 export { ByteTracker } from './trackers/bytetrack.js';
 export type { OcSortAsoFunc, OcSortTrackerOptions } from './trackers/ocsort.js';
