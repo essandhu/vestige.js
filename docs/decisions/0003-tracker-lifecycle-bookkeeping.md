@@ -176,11 +176,54 @@ A natural reaction is "can we encode §1 in the type system?" — e.g. make `app
 | Item | When to revisit |
 |---|---|
 | `__DEBUG__`-mode invariant checker in `BaseTracker` | If the bug recurs after this ADR is in place, or if a tracker PR omits the §4 test and reviewers want a compile-time net. |
-| ByteTracker sister fixture vs. `byte_tracker.py` (analog of `ocsort-noahcao/` and `sort-abewley/`) | When the same `exportConfirmed` / lifecycle-bookkeeping class of bug needs the same level of defense for ByteTracker. The harness from the two existing sister fixtures transfers verbatim; only `gen.py` and the sequence design change. |
+
+The ByteTracker sister fixture is no longer deferred: it landed as
+`packages/core/fixtures/bytetrack-foundationvision/`, closing the last
+cross-implementation gap for the three shipped trackers. All three now have an
+oracle against their canonical Python reference. What that exercise surfaced is
+recorded in §7 below.
 
 ---
 
-## 7. Open questions
+## 7. Confirmed cross-implementation divergences (ByteTracker)
+
+Building the sister fixture turned up divergences from `byte_tracker.py` that the
+fixture itself does **not** cover, because its disjoint-lane sequence stays inside
+the envelope where the two implementations provably agree. They are recorded here
+so the next reader doesn't mistake a green validation suite for full faithfulness.
+
+The most consequential one is **not** a lifecycle bug and gets its own ADR:
+
+> **Association semantics.** All three trackers gate cost cells above their cutoff
+> to `+Infinity` and then run `solveLsap`, which returns a **max-cardinality**
+> min-cost matching. None of the three references does that. `byte_tracker.py` calls
+> `lap.lapjv(cost, extend_cost=True, cost_limit=thresh)`, a **rejection-cost** model
+> in which a row may decline every detection by "matching" a dummy column priced at
+> `cost_limit`. `sort.py` solves the *full* ungated matrix and only then drops
+> matches below `iou_threshold` (`sort.py:170,186`). `OC_SORT/association.py` does
+> the same with `lap.lapjv(extend_cost=True)` and no limit.
+>
+> Gate-then-solve is equivalent to neither. On `cost = [[0.1, 0.79], [0.79, 1.0]]`
+> with cutoff 0.8, `lapjv` matches only row 0 (total cost 0.10) while `solveLsap`
+> is forced to match both rows (total cost 1.58), handing row 0 the *wrong*
+> detection. The conventions coincide exactly when the admissible cells form an
+> unambiguous matching — which is what every current synthetic fixture produces,
+> and is why all three pass. They diverge under competition, i.e. in crowded
+> frames, i.e. in MOT17/MOT20. Tracked separately in ADR-0005.
+
+Lifecycle-scoped divergences, which *are* this ADR's business:
+
+| # | Divergence | Status |
+|---|---|---|
+| 1 | **One-frame-early lost reap.** `byte_tracker.py:283-284` runs `self.lost_stracks = sub_stracks(self.lost_stracks, self.removed_stracks)` *before* `self.removed_stracks.extend(removed_stracks)`, so a track marked removed on frame N is still in `lost_stracks` — hence still in `strack_pool` — on frame N+1, where a reappearing detection re-activates it under its original id. The reference's re-association window is `L+1..L+32`; vestige's is `L+1..L+31`. | **Deliberate divergence.** We do not reproduce it. It is plainly a reference bug (the track lands in `tracked_stracks` and `removed_stracks` at once) and reproducing it would violate §1's "removed means removed". Costs a small IDF1 delta vs. published numbers; document it in the benchmark write-up rather than chasing it. |
+| 2 | **`removeDuplicates` ranks by the wrong quantity.** The reference compares `frame_id - start_frame`, and `frame_id` *freezes* at a lost track's last-matched frame; vestige compares `age`, which keeps incrementing while lost. The port therefore deletes the wrong member of a duplicate pair. The faithful expression is `age - timeSinceUpdate`. | **Bug. Fix pending.** |
+| 3 | **`removeDuplicates` omits tracks spawned this frame.** The reference's `tracked_stracks` includes newborns (via `activated_starcks`), giving them `timep = 0`, so they always lose a duplicate contest. vestige's dedup only considers `confirmed` and `lost`. | **Bug. Fix pending.** |
+| 4 | **`strackPool` row order.** The reference builds `joint_stracks(tracked_stracks, lost_stracks)` — all confirmed, then all lost. vestige iterates the `tracks` Map in insertion order, interleaving them. Observable only through the solver's tie-breaking, but the cost matrix rows are genuinely permuted. | **Bug. Fix pending** (cheap: partition before building the pool). |
+| 5 | **IoU pixel convention.** `matching.ious()` → `cython_bbox` uses the Faster R-CNN `+1` convention; `geometry/iou.ts` uses the standard one. Inflates reference IoU by up to ~0.006 on 80×80 boxes, nudging every stage cutoff and the 0.85 dedup cutoff. | **Deliberate divergence.** Standard IoU is correct and shared across all trackers; do not corrupt it to chase a legacy artifact. |
+
+---
+
+## 8. Open questions
 
 1. **Should `applyMatch` / `applyMiss` themselves assert against double-call?** A `track.__touchedThisFrame__` field guarded behind `__DEBUG__` would catch any violation regardless of test coverage. Cost: one boolean per track, reset at top of each `update()`. Worth it? Defer until §6's "if the bug recurs" trigger.
 2. **Stage-3-unmatched tentatives in ByteTracker** are transitioned `state = 'removed'` without `applyMiss` (`bytetrack.ts:353`). Currently dormant because `sweepRemoved` runs immediately after, but the invariant in §1 admits this as the third category ("transitioned directly to removed without scoring"). Documented but not enforced; revisit if a hook between mutation and sweep ever exists.
