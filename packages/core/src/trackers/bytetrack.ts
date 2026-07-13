@@ -7,7 +7,7 @@ import { KalmanFilter } from '../filters/kalman.js';
 import { CvXyahMotionModel } from '../filters/motion-models/cv-xyah.js';
 import { xyahToXyxy, xyxyToXyah } from '../geometry/bbox.js';
 import { iouMatrix, iou as iouScalar } from '../geometry/iou.js';
-import { solveLsap } from '../solvers/hungarian.js';
+import { solveWithRejectionCost } from '../solvers/association.js';
 import type { BBox, Detection, Track } from '../types.js';
 import { BaseTracker, type InternalTrack } from './base.js';
 
@@ -434,9 +434,10 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
 /**
  * IoU-distance association between predicted-track bboxes and detections.
  * Builds an M×N cost matrix where `cost[i, j] = 1 − IoU(tracks[i], dets[j])`
- * (optionally weighted via `fuse_score`), gates cells whose cost exceeds
- * `cutoff` to `+Infinity`, and runs Jonker-Volgenant assignment. Empty inputs
- * return an all-unmatched result without invoking the solver.
+ * (optionally weighted via `fuse_score`) and resolves it under ByteTrack's
+ * rejection-cost convention ({@link solveWithRejectionCost}), where `cutoff` is the
+ * price of leaving a track unmatched. Empty inputs return an all-unmatched result
+ * without invoking the solver.
  *
  * Hoisted to module scope to keep the per-frame hot path free of closures
  * (CONTRIBUTING.md §3.4).
@@ -462,14 +463,19 @@ function matchByIou<TPayload>(
   for (let i = 0; i < M; i++) {
     for (let j = 0; j < N; j++) {
       let c = 1 - iou[i * N + j]!;
-      // fuse_score: cost' = 1 − (1 − cost) * det_score. Preserves the
-      // gating sentinel because `1 − Infinity * positive` underflows to
-      // `−Infinity`, and `1 − (−Infinity)` is `+Infinity` again.
+      // fuse_score: cost' = 1 − (1 − cost) * det_score.
       if (applyFuseScore) c = 1 - (1 - c) * detections[j]!.score;
-      cost[i * N + j] = c > cutoff ? Number.POSITIVE_INFINITY : c;
+      cost[i * N + j] = c;
     }
   }
-  const { rowToCol } = solveLsap(cost, M, N);
+  // The reference's `matching.linear_assignment(dists, thresh)` is
+  // `lap.lapjv(dists, extend_cost=True, cost_limit=thresh)` — a REJECTION-COST
+  // model, not a gate. `cutoff` is the price of declining a track entirely, and a
+  // track takes a detection only when that is cheaper than declining. Feeding the
+  // ungated cost matrix here is deliberate: `solveWithRejectionCost` forbids cells
+  // above `cutoff` itself, and pre-gating to +Infinity would reintroduce the
+  // max-cardinality forcing this replaces. See ADR-0005.
+  const rowToCol = solveWithRejectionCost(cost, M, N, cutoff);
   const matched: Array<[number, number]> = [];
   const matchedTracks = new Uint8Array(M);
   const matchedDets = new Uint8Array(N);

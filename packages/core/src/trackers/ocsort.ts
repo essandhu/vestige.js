@@ -6,7 +6,7 @@
 import { KalmanFilter, type KalmanState } from '../filters/kalman.js';
 import { CvBBoxMotionModel, xysrToXyxy, xyxyToXysr } from '../filters/motion-models/cv-bbox.js';
 import { giouMatrix, iouMatrix } from '../geometry/iou.js';
-import { solveLsap } from '../solvers/hungarian.js';
+import { solveThenFilter } from '../solvers/association.js';
 import type { BBox, Detection, Track } from '../types.js';
 import { BaseTracker, type InternalTrack } from './base.js';
 
@@ -66,9 +66,9 @@ export interface OcSortTrackerOptions {
    */
   readonly minHits?: number;
   /**
-   * Minimum IoU for a track-detection pair to be considered for association
-   * in any stage. Pairs below this are gated to `+Infinity` (ARCHITECTURE.md §5.6).
-   * Default 0.3.
+   * Minimum IoU for a track-detection pair to survive association in any stage.
+   * Per the reference, this is applied AFTER the assignment is solved, not as a
+   * gate before it (`solveThenFilter`; see ADR-0005). Default 0.3.
    */
   readonly iouThreshold?: number;
   /**
@@ -87,10 +87,11 @@ export interface OcSortTrackerOptions {
    */
   readonly asoFunc?: OcSortAsoFunc;
   /**
-   * Observation-Centric Momentum (OCM) weight. The angular-consistency
-   * term in the primary cost matrix is multiplied by `inertia * det_score`
-   * before being subtracted from `(1 − IoU)`. Larger values penalize
-   * direction-inconsistent matches more strongly. Default 0.2.
+   * Observation-Centric Momentum (OCM) weight (the reference's `vdc_weight`).
+   * The angular-consistency term is multiplied by `inertia * det_score` and ADDED
+   * to the IoU being maximized. Larger values reward direction-consistent matches
+   * more strongly. It biases the SOLVE only — the `iouThreshold` filter that runs
+   * afterwards sees raw IoU. Default 0.2.
    */
   readonly inertia?: number;
   /**
@@ -625,7 +626,14 @@ function associatePrimary<TPayload>(
   for (let j = 0; j < N; j++) detBoxes[j] = dets[j]!.bbox;
 
   const iou = iouMatrix(trackBoxes, detBoxes);
-  const cost = new Float64Array(M * N);
+
+  // The reference solves on `-(iou_matrix + angle_diff_cost)` but thresholds on RAW
+  // `iou_matrix` — both the unambiguous-matching shortcut (`a = iou > threshold`)
+  // and the post-filter (`if iou_matrix[m[0], m[1]] < iou_threshold`) ignore the
+  // angle term. So the two matrices are genuinely different and must stay separate:
+  // the OCM angle bonus can win a pair the solve, and that pair still gets dropped
+  // if its raw IoU is below threshold. See ADR-0005.
+  const solveScore = new Float64Array(M * N);
 
   for (let i = 0; i < M; i++) {
     const track = tracks[i]!;
@@ -633,12 +641,7 @@ function associatePrimary<TPayload>(
     const vel = track.velocity; // may be null
     const ocmActive = inertia > 0 && vel !== null && kPrev !== null;
     for (let j = 0; j < N; j++) {
-      const iouVal = iou[i * N + j]!;
-      if (iouVal < iouThresh) {
-        cost[i * N + j] = Number.POSITIVE_INFINITY;
-        continue;
-      }
-      let c = 1 - iouVal;
+      let s = iou[i * N + j]!;
       if (ocmActive) {
         const dir = _speedDirection(kPrev!, dets[j]!.bbox);
         // vel and dir are both [dy, dx]; their dot product is cos(Δangle).
@@ -647,13 +650,15 @@ function associatePrimary<TPayload>(
         else if (cosAng < -1) cosAng = -1;
         const ang = Math.acos(cosAng);
         const diffAng = (Math.PI / 2 - Math.abs(ang)) / Math.PI;
-        c -= inertia * dets[j]!.score * diffAng;
+        // `angle_diff_cost = valid_mask * diff_angle * vdc_weight * det_score`,
+        // ADDED to the IoU being maximized (`inertia` is the reference's vdc_weight).
+        s += inertia * dets[j]!.score * diffAng;
       }
-      cost[i * N + j] = c;
+      solveScore[i * N + j] = s;
     }
   }
 
-  return _solveAndPackage(cost, M, N);
+  return _package(solveThenFilter(solveScore, iou, M, N, iouThresh, true), M, N);
 }
 
 /**
@@ -689,17 +694,15 @@ function associateAsoFunc<TPayload>(
     score = iouMatrix(trackBoxes, detBoxes);
   }
 
-  const cost = new Float64Array(M * N);
-  for (let i = 0; i < M * N; i++) {
-    const s = score[i]!;
-    cost[i] = s < iouThresh ? Number.POSITIVE_INFINITY : 1 - s;
-  }
-
-  return _solveAndPackage(cost, M, N);
+  // The BYTE / OCR stages use the same solve-then-filter shape as the primary stage,
+  // but WITHOUT the unambiguous-matching shortcut, and guarded by
+  // `if iou_left.max() > self.iou_threshold:` — strictly above, so a matrix whose
+  // maximum sits exactly on the threshold yields no matches at all.
+  return _package(solveThenFilter(score, score, M, N, iouThresh, false, true), M, N);
 }
 
-function _solveAndPackage(cost: Float64Array, M: number, N: number): StageAssociationResult {
-  const { rowToCol } = solveLsap(cost, M, N);
+/** Package a solved `rowToCol` (‑1 = unmatched) into a {@link StageAssociationResult}. */
+function _package(rowToCol: Int32Array, M: number, N: number): StageAssociationResult {
   const matched: Array<[number, number]> = [];
   const matchedTracks = new Uint8Array(M);
   const matchedDets = new Uint8Array(N);
