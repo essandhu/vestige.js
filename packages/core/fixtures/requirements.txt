@@ -3,3 +3,11 @@ scipy==1.17.1
 # Required only by ocsort-noahcao/gen.py (noahcao/OC_SORT imports
 # filterpy.common.reshape_z and filterpy.stats.logpdf in kalmanfilter.py).
 filterpy==1.4.5
+# Required only by bytetrack-foundationvision/gen.py. ByteTrack's
+# yolox/tracker/matching.py hard-imports both -- `linear_assignment` calls
+# lap.lapjv with no scipy fallback, and `ious` calls cython_bbox.bbox_overlaps.
+# `lapx` is the maintained fork of the (unbuildable on modern Python) `lap`
+# package; it installs under the module name `lap`, which is what matching.py
+# imports.
+lapx==0.9.4
+cython_bbox==0.1.5
