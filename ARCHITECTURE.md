@@ -288,7 +288,19 @@ The Kalman filter is not Extended or Unscented. Linear KF is sufficient because 
 
 A pure function: given a set of predicted track bboxes, a set of detections, and a cost function (IoU, GIoU, etc.), produce an `M × N` cost matrix as a `Float64Array`. This is the input to Hungarian assignment.
 
-Cost matrix gating: distances above a threshold are set to `+Infinity` before solving. This is faster than post-filtering and lets the solver short-circuit forbidden cells.
+**Cost matrix gating is NOT a free optimization, and this section used to say it was.** The original rule here — "distances above a threshold are set to `+Infinity` before solving; this is faster than post-filtering" — is wrong, and every tracker implemented it faithfully. Pre-gating is not a faster *equivalent* of post-filtering; it is a different algorithm.
+
+Gating cells to `+Infinity` and then solving yields the minimum-cost **maximum-cardinality** matching over the surviving cells. That forces a track to accept a mediocre-but-admissible detection rather than go unmatched — even when doing so steals the detection that another track owns outright. None of the three reference implementations does this. Each declines matches instead, in its own way:
+
+| Reference | Convention |
+|---|---|
+| `sort.py` | Solve the **full, ungated** IoU matrix (`linear_assignment(-iou_matrix)`), **then** drop matched pairs below `iou_threshold`. |
+| `OC_SORT` | Same solve-then-filter; the primary stage solves on `iou + angle_diff_cost` but filters on raw `iou`. |
+| `ByteTrack` | `lap.lapjv(cost, extend_cost=True, cost_limit=thresh)` — a **rejection-cost** model: a track may decline every detection at a flat price of `thresh`, and takes one only when that is cheaper. |
+
+Association therefore does **not** belong in this section as a single shared rule. The two conventions live in `solvers/association.ts` (`solveThenFilter`, `solveWithRejectionCost`), and each tracker calls the one its own reference uses — consistent with §2.2 ("algorithms own their options"). See `docs/decisions/0005-association-semantics.md` for the counterexample and the migration.
+
+What this section *does* still own: the cost matrix itself is a pure function — given predicted track bboxes, detections, and a cost function (IoU, GIoU, …), produce an `M × N` `Float64Array`. It is handed to the association convention ungated.
 
 ---
 

@@ -41,3 +41,12 @@ external reference repo) document their setup in their per-fixture README.
 | `ocsort-noahcao/` | `tests/validation/ocsort-noahcao-fixture.test.ts` — cross-implementation faithfulness vs. `noahcao/OC_SORT` | clone `noahcao/OC_SORT` at the pinned commit (see fixture README) |
 | `sort-abewley/` | `tests/validation/sort-abewley-fixture.test.ts` — cross-implementation faithfulness vs. `abewley/sort` | clone `abewley/sort` at the pinned commit (see fixture README) |
 | `bytetrack-foundationvision/` | `tests/validation/bytetrack-foundationvision-fixture.test.ts` — cross-implementation faithfulness vs. `FoundationVision/ByteTrack` | clone `FoundationVision/ByteTrack` at the pinned commit, plus `lapx` + `cython_bbox` (see fixture README) |
+| `association-crowded/` | `tests/validation/association-crowded-fixture.test.ts` — association semantics under **competition**, for all three trackers at once | all three reference clones (see ADR-0005) |
+
+The three per-tracker fixtures above use well-separated boxes, so every cost matrix
+they build has an unambiguous optimum — and under those conditions all three
+reference association conventions agree with each other. That regime hid a real bug
+(ADR-0005). `association-crowded/` deliberately drives the opposite regime: one
+sequence, run through all three references, where detections genuinely compete.
+**A fixture only tests the regime its sequence puts the code in** — when adding one,
+ask what regime it is leaving uncovered.
