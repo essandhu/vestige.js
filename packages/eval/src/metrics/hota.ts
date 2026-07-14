@@ -43,6 +43,26 @@ export interface HotaResult {
   readonly assaPerAlpha: Float64Array;
   /** Per-alpha LocA, parallel to `alphas`. */
   readonly locAPerAlpha: Float64Array;
+
+  // ---------------------------------------------------------------------------
+  // Raw per-alpha counts. These are what make CROSS-SEQUENCE AGGREGATION possible,
+  // and without them it is not possible at all: TrackEval combines HOTA by SUMMING
+  // HOTA_TP / HOTA_FN / HOTA_FP across sequences and TP-WEIGHTING AssA / AssRe /
+  // AssPr / LocA (`hota.py:combine_sequences`) — never by averaging per-sequence
+  // HOTA. The rates above cannot be un-mixed back into counts after the fact, so
+  // they are surfaced here. See {@link import('../aggregate.js').combineHota}.
+  // ---------------------------------------------------------------------------
+
+  /** Per-alpha true positives (`HOTA_TP`). */
+  readonly tpPerAlpha: Float64Array;
+  /** Per-alpha false negatives (`HOTA_FN`). */
+  readonly fnPerAlpha: Float64Array;
+  /** Per-alpha false positives (`HOTA_FP`). */
+  readonly fpPerAlpha: Float64Array;
+  /** Per-alpha association recall, parallel to `alphas`. TP-weighted when combined. */
+  readonly assRePerAlpha: Float64Array;
+  /** Per-alpha association precision, parallel to `alphas`. TP-weighted when combined. */
+  readonly assPrPerAlpha: Float64Array;
 }
 
 /**
@@ -150,6 +170,10 @@ export function hota(frames: ReadonlyArray<EvalFrame>): HotaResult {
   const detaPerAlpha = new Float64Array(numAlphas);
   const assaPerAlpha = new Float64Array(numAlphas);
   const locAPerAlpha = new Float64Array(numAlphas);
+  const fnPerAlpha = new Float64Array(numAlphas);
+  const fpPerAlpha = new Float64Array(numAlphas);
+  const assRePerAlpha = new Float64Array(numAlphas);
+  const assPrPerAlpha = new Float64Array(numAlphas);
   let detReSum = 0;
   let detPrSum = 0;
   let assReSum = 0;
@@ -175,6 +199,11 @@ export function hota(frames: ReadonlyArray<EvalFrame>): HotaResult {
         assPrSumTp += c * (c / trCount);
       }
     }
+
+    fnPerAlpha[a] = fn;
+    fpPerAlpha[a] = fp;
+    assRePerAlpha[a] = tp > 0 ? assReSumTp / tp : 0;
+    assPrPerAlpha[a] = tp > 0 ? assPrSumTp / tp : 0;
 
     const deta = tp / (tp + fn + fp);
     const assa = tp > 0 ? assaSumTp / tp : 0;
@@ -203,6 +232,11 @@ export function hota(frames: ReadonlyArray<EvalFrame>): HotaResult {
     detaPerAlpha,
     assaPerAlpha,
     locAPerAlpha,
+    tpPerAlpha,
+    fnPerAlpha,
+    fpPerAlpha,
+    assRePerAlpha,
+    assPrPerAlpha,
   };
 }
 

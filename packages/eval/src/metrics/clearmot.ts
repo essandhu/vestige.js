@@ -55,6 +55,17 @@ export interface ClearMotResult {
   readonly numGtDets: number;
   /** Distinct ground-truth identities in the sequence. */
   readonly numGtIds: number;
+  /**
+   * Sum of the IoU over every true positive — i.e. `motp × tp`, kept un-divided.
+   *
+   * Exposed because **MOTP does not aggregate as a mean of per-sequence MOTPs.**
+   * TrackEval carries `MOTP_sum` as a *summed* field across sequences and only then
+   * divides by the summed TP (`clear.py:_compute_final_fields`:
+   * `MOTP = MOTP_sum / max(1, CLR_TP)`). Averaging the per-sequence MOTPs instead would
+   * weight a 20-frame sequence the same as a 1000-frame one, and would not be the number
+   * MOTChallenge publishes. See {@link import('../aggregate.js').combineClearMot}.
+   */
+  readonly motpSum: number;
 }
 
 /**
@@ -190,6 +201,7 @@ export function clearMot(
     ml,
     numGtDets: seq.numGtDets,
     numGtIds: seq.numGtIds,
+    motpSum,
   };
 }
 
