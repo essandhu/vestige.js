@@ -564,11 +564,34 @@ export class OcSortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    * exercises this gap directly, which is why this override mirrors the
    * reference exactly.
    *
-   * The reference's output bbox preference (`last_observation[:4]` when
-   * available, else `get_state()[0]`) is matched here by exporting
-   * `track.bbox` — which {@link updateTrack} has just refreshed from the
-   * post-update Kalman state, equal-by-design to the last observation
-   * within Kalman-filter noise.
+   * **The exported bbox is the raw last OBSERVATION, not the Kalman posterior.**
+   * `ocsort.py:313-320`:
+   *
+   * ```python
+   * if trk.last_observation.sum() < 0:
+   *     d = trk.get_state()[0]        # never observed -> Kalman state
+   * else:
+   *     d = trk.last_observation[:4]  # the RAW DETECTION
+   * ```
+   *
+   * This is the one place OC-SORT breaks from SORT and ByteTrack, which both export
+   * their filter state (`sort.py` via `get_state()`, ByteTrack via `STrack.tlbr`).
+   * OC-SORT is observation-centric to the end: having spent ORU and OCM correcting
+   * for Kalman drift, it declines to hand you the drifted box.
+   *
+   * This JSDoc used to claim the two conventions were "equal-by-design to the last
+   * observation within Kalman-filter noise", and exported `track.bbox` accordingly.
+   * They are equal only under noise-free, perfectly-linear detections — which is
+   * precisely what every fixture fed it, so the delta measured 0.000000 px and the
+   * claim looked true. A posterior differing from its measurement is the entire point
+   * of running a Kalman filter; on any real detector stream the two diverge (σ=4 px
+   * noise moves the box ~0.8 px on frame 2, up to ~9 px after an occlusion). Every
+   * exported box was wrong on real data. See `fixtures/detection-noise/` and ADR-0007.
+   *
+   * Note the fallback is reachable and not defensive padding: `lastObservation` is
+   * `null` until a track's first MATCH (spawning does not set it, mirroring
+   * `KalmanBoxTracker.__init__` leaving the `[-1,-1,-1,-1,-1]` sentinel in place), and
+   * during the `frameIndex <= minHits` warmup such a track is exported anyway.
    */
   protected override exportConfirmed(): Track<TPayload>[] {
     const out: Track<TPayload>[] = [];
@@ -576,7 +599,9 @@ export class OcSortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     for (const track of this.tracks.values()) {
       if (track.timeSinceUpdate !== 0) continue;
       if (track.hitStreak >= this.minHits || warmup) {
-        out.push(this.materializeTrack(track));
+        const base = this.materializeTrack(track);
+        const lastObs = (track as OcSortInternalTrack<TPayload>).lastObservation;
+        out.push(lastObs === null ? base : { ...base, bbox: lastObs });
       }
     }
     return out;
