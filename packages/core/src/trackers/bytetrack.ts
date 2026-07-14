@@ -261,12 +261,23 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
 
     // 1. Partition existing tracks. tentatives stay aside for stage 3;
     //    strackPool (confirmed + lost) feeds stages 1 & 2 after a predict step.
+    //
+    //    Order matters: the reference builds `strack_pool = joint_stracks(tracked_stracks,
+    //    self.lost_stracks)` (`byte_tracker.py:204`) — ALL confirmed first, then all lost.
+    //    vestige iterated the `tracks` Map in insertion order, which interleaves them, so
+    //    the cost matrix rows came out permuted. Row order cannot change the optimal
+    //    assignment, so this is observable only through the solver's TIE-BREAKING — but the
+    //    rows were genuinely in a different order than the reference's, and matching a
+    //    reference "except when there's a tie" is not matching it. Cheap to get right.
     const tentatives: InternalTrack<TPayload>[] = [];
-    const strackPool: InternalTrack<TPayload>[] = [];
+    const confirmedPool: InternalTrack<TPayload>[] = [];
+    const lostPool: InternalTrack<TPayload>[] = [];
     for (const track of this.tracks.values()) {
       if (track.state === 'tentative') tentatives.push(track);
-      else strackPool.push(track);
+      else if (track.state === 'lost') lostPool.push(track);
+      else confirmedPool.push(track);
     }
+    const strackPool: InternalTrack<TPayload>[] = [...confirmedPool, ...lostPool];
 
     // 2. Predict confirmed + lost; age all surviving tracks (the spawn frame
     //    is handled below — new tracks created this frame start at age 0).
@@ -378,8 +389,24 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     }
 
     // 8. Reap lost tracks past max_time_lost.
+    //
+    // The `max(maxAge, 1)` is not a clamp on a silly config — it models a real property of
+    // the reference. Its removal loop (`byte_tracker.py:271-274`) iterates
+    // `self.lost_stracks`, and the tracks that went lost on THIS frame are not in it yet:
+    // they sit in a local `lost_stracks` list and are only folded in by
+    // `self.lost_stracks.extend(lost_stracks)` on the line AFTER the loop. So the check
+    // never sees a track on its first lost frame — it first sees it one frame later.
+    //
+    // At `maxAge >= 1` the lag is invisible, because the track survives its first lost
+    // frame on the age budget anyway, and `max(maxAge, 1) === maxAge`. At `maxAge = 0` the
+    // lag IS the behaviour: `max_time_lost = 0` ends up acting exactly like 1, and the
+    // reference's output for `track_buffer=0` and `track_buffer=1` is byte-identical
+    // (verified against the pinned commit). Reaping on the bare `tsu > maxAge` fired on the
+    // very frame the track went lost (tsu = 1 > 0), destroying it before the reference's
+    // loop could even consider it and losing the re-association outright. See ADR-0003 §7.
+    const reapAfter = Math.max(this.maxAge, 1);
     for (const track of this.tracks.values()) {
-      if (track.state === 'lost' && track.timeSinceUpdate > this.maxAge) {
+      if (track.state === 'lost' && track.timeSinceUpdate > reapAfter) {
         track.state = 'removed';
       }
     }
@@ -411,23 +438,66 @@ export class ByteTracker<TPayload = unknown> extends BaseTracker<TPayload> {
    * produce).
    */
   private removeDuplicates(): void {
-    const confirmed: InternalTrack<TPayload>[] = [];
+    // `tracked` mirrors the reference's `stracksa = self.tracked_stracks`, i.e. every
+    // track whose reference state is `Tracked` — which is BOTH of vestige's live states
+    // (`tentative ≡ Tracked && !is_activated`, `confirmed ≡ Tracked && is_activated`).
+    // `byte_tracker.py:279` joins the newly activated tracks into `tracked_stracks` before
+    // `remove_duplicate_stracks` is called, so a track spawned this frame is a dedup
+    // candidate with `timep = 0` and always loses.
+    //
+    // Honesty note: the `tentative` half of this pool is NOT pinned by any test, and is
+    // believed UNREACHABLE. A tentative track's bbox is its spawn detection's bbox, so for
+    // it to overlap a LOST track above the 0.85 cutoff, that detection would have had to
+    // sit on the lost track's predicted box — and stage 1 would have consumed it first. At
+    // IoU ≥ 0.85 with a spawnable score (≥ detThresh = 0.6), the fused cost is at most
+    // `1 − 0.85·0.6 = 0.49`, well below the 0.8 price of declining, so the rejection-cost
+    // association hands the detection to the lost track rather than leaving it to spawn a
+    // tentative. It is included anyway because it mirrors the reference's pool exactly: if
+    // that argument has a hole, matching the reference is correct and excluding tentatives
+    // would be the bug.
+    const tracked: InternalTrack<TPayload>[] = [];
     const lost: InternalTrack<TPayload>[] = [];
     for (const track of this.tracks.values()) {
-      if (track.state === 'confirmed') confirmed.push(track);
+      if (track.state === 'confirmed' || track.state === 'tentative') tracked.push(track);
       else if (track.state === 'lost') lost.push(track);
     }
-    if (confirmed.length === 0 || lost.length === 0) return;
-    for (const c of confirmed) {
-      for (const l of lost) {
+    if (tracked.length === 0 || lost.length === 0) return;
+
+    // Collect first, delete after — the reference builds `dupa`/`dupb` and only then
+    // filters, so every pair is judged against the same pre-dedup state.
+    const dropTracked = new Set<number>();
+    const dropLost = new Set<number>();
+
+    for (const a of tracked) {
+      for (const b of lost) {
         // 1 − IoU < 0.15  ≡  IoU > 0.85.
-        if (1 - iouScalar(c.bbox, l.bbox) < DUP_IOU_DISTANCE_CUTOFF) {
-          // Younger = smaller age; in ties, drop the confirmed one (reference branch).
-          if (c.age > l.age) this.tracks.delete(l.id);
-          else this.tracks.delete(c.id);
-        }
+        if (1 - iouScalar(a.bbox, b.bbox) >= DUP_IOU_DISTANCE_CUTOFF) continue;
+
+        // The reference's seniority is `frame_id - start_frame`, and `frame_id` is written
+        // ONLY in activate() / re_activate() / update(). For a LOST track it is therefore
+        // FROZEN at the frame it was last matched, so the score excludes the lost span
+        // entirely — it is "how long was this track alive AND tracked", not "how long has
+        // it existed".
+        //
+        // `age - timeSinceUpdate` reconstructs that exactly, for both sides at once: a
+        // track matched this frame has tsu = 0 and scores its full age; a lost track backs
+        // out precisely the frames it has been missing; a track spawned this frame scores 0.
+        //
+        // Comparing raw `age` (as this did) is the bug: `age` keeps incrementing while a
+        // track is lost, so the two scores drift apart by exactly `timeSinceUpdate`. With
+        // twins spawned on the same frame the ages stay EQUAL, `>` is false, and the LIVE,
+        // JUST-MATCHED track gets deleted in favour of the stale lost one. See ADR-0003 §7.
+        const seniorityTracked = a.age - a.timeSinceUpdate;
+        const seniorityLost = b.age - b.timeSinceUpdate;
+
+        // Ties drop the tracked one — the reference's `else: dupa.append(p)` branch.
+        if (seniorityTracked > seniorityLost) dropLost.add(b.id);
+        else dropTracked.add(a.id);
       }
     }
+
+    for (const id of dropTracked) this.tracks.delete(id);
+    for (const id of dropLost) this.tracks.delete(id);
   }
 }
 
