@@ -38,9 +38,10 @@ const det = (): Detection => ({ bbox: BOX, score: 0.9 });
  * the frame after (a track re-spawned from scratch is tentative on its first frame
  * and only exported once stage 3 confirms it, so both frames matter).
  */
-function runGap(gap: number): { onReturn: number[]; afterReturn: number[] } {
-  // maxAge = floor(30 / 30 * 30) = 30.
-  const tracker = new ByteTracker();
+function runGap(gap: number, trackBuffer?: number): { onReturn: number[]; afterReturn: number[] } {
+  // Default maxAge = floor(30 / 30 * 30) = 30.
+  const tracker =
+    trackBuffer === undefined ? new ByteTracker() : new ByteTracker({ trackBuffer });
   for (let i = 0; i < 5; i++) tracker.update([det()]); // born frame 1, matched through frame 5
   for (let i = 0; i < gap; i++) tracker.update([]);
   const onReturn = tracker.update([det()]).map((t) => t.id);
@@ -84,5 +85,66 @@ describe('ByteTracker — max_time_lost boundary (deliberate divergence from the
     const { onReturn, afterReturn } = runGap(32);
     expect(onReturn).toEqual([]);
     expect(afterReturn).toEqual([2]);
+  });
+});
+
+/**
+ * The reap boundary at `maxAge = 0`, which is NOT the resurrection divergence above and
+ * IS a bug we fix.
+ *
+ * The reference's removal loop (`byte_tracker.py:271-274`) iterates `self.lost_stracks` —
+ * and the tracks that went lost on THIS frame are not in it yet. They sit in a local
+ * `lost_stracks` list and are only folded in by `self.lost_stracks.extend(lost_stracks)`
+ * on the line AFTER the loop. So a track is never eligible for removal on its first lost
+ * frame; the check first sees it one frame later.
+ *
+ * At `maxAge >= 1` that lag is invisible — the track survives its first lost frame on the
+ * age budget anyway. At `maxAge = 0` it is the whole behaviour: `max_time_lost = 0` ends
+ * up acting exactly like 1. Executed against the reference at the pinned commit, the two
+ * configs produce IDENTICAL output:
+ *
+ *     track_buffer=0        track_buffer=1
+ *     gap=1: [1] / [1]      gap=1: [1] / [1]
+ *     gap=2: [1] / [1]      gap=2: [1] / [1]
+ *     gap=3: []  / [2]      gap=3: []  / [2]
+ *
+ * vestige reaped on `timeSinceUpdate > maxAge`, which at maxAge=0 fires on the very frame
+ * the track goes lost (tsu = 1 > 0) — removing it a frame before the reference's loop can
+ * even see it, and losing the re-association entirely. The fix is to reap on
+ * `timeSinceUpdate > max(maxAge, 1)`, which encodes "the removal check cannot see a track
+ * that went lost this frame" and is a no-op for every maxAge >= 1.
+ *
+ * See ADR-0003 §7.
+ */
+describe('ByteTracker — reap boundary at maxAge = 0 (the removal loop lags by one frame)', () => {
+  it('still re-associates after a 1-frame gap, exactly as the reference does', () => {
+    // THE BUG. vestige used to reap on the frame the track went lost, so the returning
+    // detection found nothing and minted a new id.
+    const { onReturn, afterReturn } = runGap(1, 0);
+    expect(onReturn).toEqual([1]);
+    expect(afterReturn).toEqual([1]);
+  });
+
+  it('mints a NEW id after a 2-frame gap — the sanctioned resurrection divergence', () => {
+    // The reference recovers id 1 here, via the one-frame resurrection window documented
+    // at the top of this file. We deliberately do not. Exactly ONE divergent gap length,
+    // which is the same shape as every maxAge >= 1 config.
+    const { onReturn, afterReturn } = runGap(2, 0);
+    expect(onReturn).toEqual([]);
+    expect(afterReturn).toEqual([2]);
+  });
+
+  it('mints a NEW id after a 3-frame gap, exactly as the reference does', () => {
+    const { onReturn, afterReturn } = runGap(3, 0);
+    expect(onReturn).toEqual([]);
+    expect(afterReturn).toEqual([2]);
+  });
+
+  it('behaves identically to trackBuffer = 1, as the reference does', () => {
+    // The reference's own output for track_buffer=0 and track_buffer=1 is byte-identical
+    // (see the block comment). Anything else means the lag is not being modelled.
+    for (const gap of [1, 2, 3, 4]) {
+      expect(runGap(gap, 0), `gap=${gap}`).toEqual(runGap(gap, 1));
+    }
   });
 });
