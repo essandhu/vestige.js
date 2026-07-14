@@ -43,6 +43,8 @@ external reference repo) document their setup in their per-fixture README.
 | `bytetrack-foundationvision/` | `tests/validation/bytetrack-foundationvision-fixture.test.ts` — cross-implementation faithfulness vs. `FoundationVision/ByteTrack` | clone `FoundationVision/ByteTrack` at the pinned commit, plus `lapx` + `cython_bbox` (see fixture README) |
 | `association-crowded/` | `tests/validation/association-crowded-fixture.test.ts` — association semantics under **competition**, for all three trackers at once | all three reference clones (see ADR-0005) |
 | `lsap-scipy-ties/` | `tests/validation/lsap-scipy-ties.test.ts` — `solveLsap` tie-breaking vs. `scipy.optimize.linear_sum_assignment` | none |
+| `detection-noise/` | `tests/validation/detection-noise-fixture.test.ts` — all three trackers under realistic detector noise (σ=4px) | all three reference clones (see ADR-0007) |
+| `ocsort-giou-byte/` | `tests/validation/ocsort-giou-byte-fixture.test.ts` — OC-SORT's `asoFunc: 'giou'` + `useByte: true` paths | clone `noahcao/OC_SORT` (see ADR-0007) |
 
 The three per-tracker fixtures above use well-separated boxes, so every cost matrix
 they build has an unambiguous optimum — and under those conditions all three
@@ -51,3 +53,12 @@ reference association conventions agree with each other. That regime hid a real 
 sequence, run through all three references, where detections genuinely compete.
 **A fixture only tests the regime its sequence puts the code in** — when adding one,
 ask what regime it is leaving uncovered.
+
+The same trap sprung a second time, differently. Every fixture also fed the trackers
+NOISE-FREE detections on perfectly linear trajectories — and a Kalman filter given clean
+measurements of constant-velocity motion converges its posterior exactly onto the
+measurement (measured delta: 0.000000 px). So a tracker exporting the Kalman state and one
+exporting the raw detection were observationally IDENTICAL, and OC-SORT exported the wrong
+quantity for as long as the fixtures stayed clean (ADR-0007). `detection-noise/` is the
+antidote: noise-free synthetic data is not a neutral simplification, it is a regime in
+which distinct implementations collapse onto each other.
