@@ -5,7 +5,7 @@
 import { KalmanFilter, type KalmanState } from '../filters/kalman.js';
 import { CvBBoxMotionModel, xysrToXyxy, xyxyToXysr } from '../filters/motion-models/cv-bbox.js';
 import { iouMatrix } from '../geometry/iou.js';
-import { solveLsap } from '../solvers/hungarian.js';
+import { solveThenFilter } from '../solvers/association.js';
 import type { Detection, Track } from '../types.js';
 import {
   type AssociateFn,
@@ -46,15 +46,17 @@ export interface SortTrackerOptions {
  * - 7-d constant-velocity Kalman filter on `[cx, cy, s, r, ċx, ċy, ṡ]`
  *   (see {@link CvBBoxMotionModel}).
  * - Aspect ratio `r` is treated as constant — no velocity component.
- * - Cost matrix is `1 − IoU(predicted, detection)`; pairs below `iouThreshold`
- *   are gated to `+Infinity` so the Hungarian solver never picks them. sort.py
- *   instead post-filters: it runs `linear_sum_assignment(-iou_matrix)` without
- *   gating and then drops matches whose IoU fell below the threshold. These
- *   strategies are observationally equivalent on the inputs that come up in
- *   practice (any track gated out of the optimal pre-gated assignment would
- *   also be post-filtered out of sort.py's optimal); the pre-gate convention
- *   is what ARCHITECTURE.md §5.6 mandates for the family.
- * - Linear sum assignment via Jonker-Volgenant ({@link import('../solvers/hungarian.js').solveLsap}).
+ * - Association follows sort.py's **solve-then-filter** convention
+ *   ({@link import('../solvers/association.js').solveThenFilter}): solve the full,
+ *   ungated IoU matrix (`linear_assignment(-iou_matrix)`), then drop matched pairs
+ *   whose IoU fell below `iouThreshold`.
+ *
+ *   This JSDoc previously claimed that pre-gating sub-threshold pairs to
+ *   `+Infinity` and then solving was "observationally equivalent" to sort.py's
+ *   post-filter. It is not, and the claim is what let the bug survive review:
+ *   pre-gating turns the solver into a MAX-CARDINALITY matcher, which will shove a
+ *   track onto a neighbour's detection rather than leave it unmatched — stealing it
+ *   from the track that actually owns it. See ADR-0005 for the counterexample.
  * - The per-frame lifecycle (predict → associate → update → spawn → advance
  *   transitions → sweep → export) is the SORT default and is delegated to
  *   {@link BaseTracker.runStandardLifecycle}.
@@ -170,17 +172,13 @@ export class SortTracker<TPayload = unknown> extends BaseTracker<TPayload> {
     const detBoxes = detections.map((d) => d.bbox);
     const iou = iouMatrix(preds, detBoxes);
 
-    // Cost = 1 − IoU; gate pairs whose IoU is below threshold to +Infinity so
-    // the Hungarian solver never selects them (ARCHITECTURE.md §5.6).
-    const cost = new Float64Array(M * N);
-    for (let i = 0; i < M; i++) {
-      for (let j = 0; j < N; j++) {
-        const v = iou[i * N + j]!;
-        cost[i * N + j] = v < this.iouThreshold ? Number.POSITIVE_INFINITY : 1 - v;
-      }
-    }
-
-    const { rowToCol } = solveLsap(cost, M, N);
+    // sort.py's convention: solve the FULL, UNGATED IoU matrix
+    // (`linear_assignment(-iou_matrix)`), and only THEN drop matched pairs whose IoU
+    // is below the threshold (`if iou_matrix[m[0], m[1]] < iou_threshold: ...`).
+    // Gating first and solving second is NOT the same thing — it turns the solver
+    // into a max-cardinality matcher that will shove a track onto a neighbour's
+    // detection rather than leave it unmatched. See ADR-0005.
+    const rowToCol = solveThenFilter(iou, iou, M, N, this.iouThreshold, true);
     const matched: Array<[number, number]> = [];
     const matchedTracks = new Uint8Array(M);
     const matchedDets = new Uint8Array(N);
