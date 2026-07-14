@@ -1,2 +1,12 @@
+# Deliberately NOT pinned to the same versions as packages/core/fixtures — these are
+# the versions TrackEval itself was authored against, and the eval fixtures exist to
+# reproduce TrackEval bit-for-bit.
+#
+# TrackEval (pinned at 12c8791b) predates numpy 1.24, which removed the `np.int` /
+# `np.float` / `np.bool` aliases for the builtins; `clear.py` and `identity.py` still
+# cast with them. numpy 1.23.5 therefore imports it cleanly. `trackeval-metrics/gen.py`
+# ALSO restores those aliases itself, so it runs under a newer numpy (e.g. the 2.x that
+# packages/core/fixtures pins) if both fixture trees share one environment. The aliases
+# are exact synonyms for the builtins, so restoring them changes no arithmetic.
 numpy==1.23.5
 scipy==1.10.1

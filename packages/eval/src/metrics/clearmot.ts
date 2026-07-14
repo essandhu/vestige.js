@@ -136,9 +136,28 @@ export function clearMot(
         if (prevFrameTrack[gtId] === -1) segments[gtId] = (segments[gtId] ?? 0) + 1;
         currFrameTrack[gtId] = trackId;
       }
-    }
 
-    prevFrameTrack.set(currFrameTrack);
+      // Commit the continuity memory ONLY on a frame that actually ran a match.
+      //
+      // This assignment must stay inside the `m > 0 && n > 0` guard. TrackEval
+      // `clear.py:70-76` hits `continue` when a timestep has zero gt or zero tracker
+      // detections, which skips the `prev_timestep_tracker_id[:] = np.nan` reset
+      // further down — so the continuity memory SURVIVES the hole. Hoisting this line
+      // out of the guard (as vestige originally had it) blanks the memory on every
+      // empty frame, with two consequences on real data, where empty frames are
+      // routine (a detector drops out, or preprocessing filters every gt in a frame
+      // to a distractor):
+      //
+      //   * the +1000 continuity bonus stops protecting the existing gt↔tracker
+      //     pairing on the frame after the hole, so the matcher is free to pick a
+      //     different tracker id — a SPURIOUS ID SWITCH; and
+      //   * `prevFrameTrack[gtId] === -1` reads as "was not tracked", so the resumed
+      //     track is counted as a new segment — a SPURIOUS FRAG.
+      //
+      // Unmatched gt ids DO get cleared here (via `currFrameTrack`'s -1 fill), which
+      // is the `prev_timestep_tracker_id[:] = np.nan` half of the reference's reset.
+      prevFrameTrack.set(currFrameTrack);
+    }
   }
 
   // FN/FP are global complements of TP against the detection totals.
