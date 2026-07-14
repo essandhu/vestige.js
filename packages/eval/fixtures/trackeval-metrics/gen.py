@@ -302,6 +302,9 @@ def main() -> None:
     hota = HOTA({"PRINT_CONFIG": False})
 
     out_scenarios = []
+    raw_clear: dict = {}
+    raw_ident: dict = {}
+    raw_hota: dict = {}
     for name, build in SCENARIOS.items():
         frames = build()
         data = to_trackeval_data(frames)
@@ -309,6 +312,9 @@ def main() -> None:
         c = clear.eval_sequence(data)
         i = ident.eval_sequence(data)
         h = hota.eval_sequence(data)
+        raw_clear[name] = c
+        raw_ident[name] = i
+        raw_hota[name] = h
 
         out_scenarios.append(
             {
@@ -355,6 +361,26 @@ def main() -> None:
             }
         )
 
+    # THE AGGREGATION ORACLE.
+    #
+    # Treat the nine scenarios above as nine SEQUENCES of one benchmark, and ask TrackEval
+    # to combine them with its OWN combine_sequences -- the same code path that turns
+    # MOT17's seven sequences into the single published HOTA / MOTA / IDF1.
+    #
+    # This is emphatically not a mean of the per-sequence numbers. CLEAR sums the counts
+    # (including MOTP_sum) and re-derives; HOTA sums TP/FN/FP per alpha but TP-WEIGHTS
+    # AssA/AssRe/AssPr/LocA and then recomputes HOTA = sqrt(DetA * AssA). The naive average
+    # is emitted alongside, purely so the fixture records HOW DIFFERENT it is -- see the
+    # validation test, which asserts the two do not coincide (otherwise the scenarios would
+    # not be discriminating and the test would pass for a wrong implementation).
+    comb_clear = clear.combine_sequences(raw_clear)
+    comb_ident = ident.combine_sequences(raw_ident)
+    comb_hota = hota.combine_sequences(raw_hota)
+
+    naive_mota = float(np.mean([_f(raw_clear[k]["MOTA"]) for k in raw_clear]))
+    naive_idf1 = float(np.mean([_f(raw_ident[k]["IDF1"]) for k in raw_ident]))
+    naive_hota = float(np.mean([float(np.mean(raw_hota[k]["HOTA"])) for k in raw_hota]))
+
     envelope = {
         "$schema": "vestige.js fixture v1",
         "generator": {
@@ -366,6 +392,47 @@ def main() -> None:
         },
         "threshold": THRESHOLD,
         "scenarios": out_scenarios,
+        "combined": {
+            "note": (
+                "TrackEval's own combine_sequences over all scenarios above, treated as "
+                "sequences of one benchmark. This is the shape of the number MOTChallenge "
+                "publishes. `naive_mean_*` is what you get by averaging the per-sequence "
+                "values instead -- recorded to show it is a DIFFERENT number, not to bless it."
+            ),
+            "clear": {
+                "tp": _f(comb_clear["CLR_TP"]),
+                "fp": _f(comb_clear["CLR_FP"]),
+                "fn": _f(comb_clear["CLR_FN"]),
+                "idsw": _f(comb_clear["IDSW"]),
+                "mota": _f(comb_clear["MOTA"]),
+                "motp": _f(comb_clear["MOTP"]),
+                "mt": _f(comb_clear["MT"]),
+                "pt": _f(comb_clear["PT"]),
+                "ml": _f(comb_clear["ML"]),
+                "frag": _f(comb_clear["Frag"]),
+            },
+            "identity": {
+                "idtp": _f(comb_ident["IDTP"]),
+                "idfp": _f(comb_ident["IDFP"]),
+                "idfn": _f(comb_ident["IDFN"]),
+                "idf1": _f(comb_ident["IDF1"]),
+                "idp": _f(comb_ident["IDP"]),
+                "idr": _f(comb_ident["IDR"]),
+            },
+            "hota": {
+                "hota": float(np.mean(comb_hota["HOTA"])),
+                "deta": float(np.mean(comb_hota["DetA"])),
+                "assa": float(np.mean(comb_hota["AssA"])),
+                "loca": float(np.mean(comb_hota["LocA"])),
+                "hota_per_alpha": [float(v) for v in comb_hota["HOTA"]],
+                "deta_per_alpha": [float(v) for v in comb_hota["DetA"]],
+                "assa_per_alpha": [float(v) for v in comb_hota["AssA"]],
+                "loca_per_alpha": [float(v) for v in comb_hota["LocA"]],
+            },
+            "naive_mean_mota": naive_mota,
+            "naive_mean_idf1": naive_idf1,
+            "naive_mean_hota": naive_hota,
+        },
     }
 
     out_path = Path(__file__).with_name("data.json")

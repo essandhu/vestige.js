@@ -6,6 +6,7 @@
  *   per the `JonathonLuiten/TrackEval` reference (CONTRIBUTING.md §4.2).
  * - `runner` — drives a `Tracker` over a sequence and glues the two together.
  */
+export { combineClearMot, combineHota, combineIdentity } from './aggregate.js';
 export * from './metrics/index.js';
 export * from './motchallenge/index.js';
 export { evalFramesFromEntries, runTracker, tracksToMotEntries } from './runner.js';

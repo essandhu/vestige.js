@@ -130,4 +130,56 @@ test that cannot fail is worse than none, because it looks like coverage.
 | Item | When to revisit |
 |---|---|
 | **Tracker-side tie-breaking.** `solveLsap` now matches scipy. But the tracker references all call `lap.lapjv`, which breaks ties differently from scipy — verified: they disagree on *every* tied matrix tried, including the trivial all-zero 3×3. So scipy parity is right for the metrics and *wrong* for the trackers. It is currently unexercised (no fixture produces an exact IoU tie), but real MOT data contains duplicate boxes. Fixing it means giving `solveLsap` a tie-break policy rather than one global rule. | Before the MOT17 run, or the first time a tracker fixture fails on an id permutation with matching bboxes. |
-| Multi-sequence aggregation (MOT17 is 7 train / 14 test sequences). TrackEval accumulates **counts** across sequences and computes the metric once; averaging per-sequence metrics gives a different, wrong number. Not yet exercised — every fixture here is single-sequence. | When the benchmark runner grows multi-sequence support. This is the next thing most likely to silently corrupt a headline figure. |
+| ~~Multi-sequence aggregation~~ | **DONE** — `src/aggregate.ts`, validated against TrackEval's own `combine_sequences` (see §5 below). |
+
+---
+
+## 5. Cross-sequence aggregation (added after the initial calibration)
+
+The deferral above turned out to be the last thing standing between us and an MOT17
+number, so it is now done rather than deferred.
+
+MOT17 is seven training sequences (fourteen test); MOT20 is four. The headline HOTA /
+MOTA / IDF1 is ONE number across all of them — and the eval package had **no aggregation
+at all**, exporting only per-sequence results. So there was no way to produce the
+published figure, and the obvious thing anyone would reach for is wrong.
+
+**Averaging the per-sequence values is not the answer.** TrackEval sums the raw *counts*
+across sequences and recomputes the metric once from the totals. Its `_compute_final_fields`
+even carries the comment "*this function is used for both per-sequence calculation, and in
+combining values across sequences*" — the recompute is literally the same code in both
+cases. `src/aggregate.ts` mirrors that invariant: **sum the extensive quantities, then
+re-derive the rates.**
+
+Which quantities are extensive differs per metric, and that is exactly where a
+plausible-looking implementation goes wrong:
+
+| Metric | Combines by |
+|---|---|
+| CLEAR | Sum TP/FN/FP/IDSW/MT/PT/ML/Frag **and `MOTP_sum`**; re-derive MOTA and MOTP. MOTP is `Σmotp_sum / Σtp`, never a mean of per-sequence MOTPs. |
+| Identity | Sum IDTP/IDFN/IDFP; re-derive IDF1/IDP/IDR. |
+| HOTA | Sum TP/FN/FP **per alpha**; **TP-weight** AssA / AssRe / AssPr / LocA; re-derive DetA from the sums and `HOTA = √(DetA · AssA)`. The combined HOTA is **not any average** of the per-sequence HOTAs. |
+
+Two API additions were forced by this and are worth noting, because their absence made
+correct aggregation *impossible*, not merely inconvenient: `ClearMotResult.motpSum`, and
+`HotaResult`'s raw per-alpha `tpPerAlpha` / `fnPerAlpha` / `fpPerAlpha` /
+`assRePerAlpha` / `assPrPerAlpha`. Rates cannot be un-mixed back into counts after the
+fact, so a metric that returns only rates cannot be aggregated correctly by anyone.
+
+### How wrong the naive version is
+
+Measured on the fixture's nine scenarios, treated as nine sequences:
+
+| | TrackEval (correct) | naive mean | delta |
+|---|---|---|---|
+| MOTA | 0.6928 | 0.6417 | **5.1 points** |
+| HOTA | 0.7659 | 0.7436 | **2.2 points** |
+| IDF1 | 0.7888 | 0.7729 | 1.6 points |
+
+In MOT terms those gaps are the difference between papers. And it would have looked like a
+*tracker* deficit, not a harness bug — the same failure mode this whole ADR is about.
+
+The fixture records the naive mean alongside the correct value **and the test asserts they
+differ**. Without that, a scenario set could drift into a shape where the two coincide, the
+fixture would silently stop discriminating, and it would go green for an implementation
+that just averages. A calibration test that cannot fail is not calibration.
