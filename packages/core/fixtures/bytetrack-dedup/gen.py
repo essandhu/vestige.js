@@ -138,28 +138,55 @@ N_FRAMES = 40
 # while its twin stays TRACKED and their boxes still coincide. That is the only shape
 # that reaches remove_duplicate_stracks at all.
 #
-# (name, x, y, occluded_frames)
+# Pairs 1-3 all spawn both twins on frame 0, which pins the SENIORITY EXPRESSION (equal
+# ages force the `age` vs `age - timeSinceUpdate` inversion). But equal spawn frames only
+# ever exercise ONE branch of the reference's comparison — `timep > timeq`, drop the lost
+# one. Two other behaviours were going unpinned, and mutation testing caught that:
+#
+#   * the ELSE branch (drop the TRACKED one), reached when the live twin is junior to the
+#     lost one's frozen lifetime; and
+#   * the TIE (`timep == timeq`), which the reference resolves via `else:` — i.e. it also
+#     drops the TRACKED one.
+#
+# Pair 4 reaches both at once, and the arithmetic for the tie is exact. Let the lost twin
+# L spawn on frame 0 and last match on frame G-1; let the live twin C spawn on frame S.
+# At frame G:
+#
+#     seniority(L) = (G - 1) - 0      (frozen: L's frame_id stopped at G-1)
+#     seniority(C) =  G      - S      (live)
+#
+# so the two are EQUAL exactly when S = 1 — the live twin spawns precisely ONE frame after
+# the other. Pair 4 does that: L4 appears on frame 0 and vanishes after frame 9; C4 appears
+# on frame 1. On frame 10 both score 9, the reference ties, and the tie drops C4 — the LIVE
+# track. A tie-break flipped to `>=` would keep C4 and drop L4 instead, and the fixture now
+# fails if it does.
+#
+# (name, x, y, first_frame, occluded_frames)
 TRACKS_SPEC = [
     # Pair 1: the TRAILING twin vanishes.
-    ("P1_lead", 100.0, 100.0, []),
-    ("P1_trail", 100.0 + TWIN_OFFSET, 100.0, list(range(8, 14))),
+    ("P1_lead", 100.0, 100.0, 0, []),
+    ("P1_trail", 100.0 + TWIN_OFFSET, 100.0, 0, list(range(8, 14))),
     # Pair 2: the LEADING twin vanishes — same shape, opposite member, so a fix that
     # happens to favour one side of the pair does not pass by luck.
-    ("P2_lead", 500.0, 100.0, list(range(20, 26))),
-    ("P2_trail", 500.0 + TWIN_OFFSET, 100.0, []),
+    ("P2_lead", 500.0, 100.0, 0, list(range(20, 26))),
+    ("P2_trail", 500.0 + TWIN_OFFSET, 100.0, 0, []),
     # Pair 3: a longer dropout, to keep the lost twin around while `age` and
     # `age - timeSinceUpdate` diverge further (tsu grows to 10).
-    ("P3_lead", 900.0, 100.0, []),
-    ("P3_trail", 900.0 + TWIN_OFFSET, 100.0, list(range(28, 38))),
+    ("P3_lead", 900.0, 100.0, 0, []),
+    ("P3_trail", 900.0 + TWIN_OFFSET, 100.0, 0, list(range(28, 38))),
+    # Pair 4: the TIE probe. C4 spawns exactly one frame after L4 (see above), so on the
+    # frame L4 goes lost both seniorities are 9 and the reference must break the tie.
+    ("P4_lost", 100.0, 500.0, 0, list(range(10, 22))),
+    ("P4_live", 100.0 + TWIN_OFFSET, 500.0, 1, []),
     # Control: isolated and always visible. Must keep one id in both implementations.
-    ("SOLO", 1400.0, 400.0, []),
+    ("SOLO", 1400.0, 400.0, 0, []),
 ]
 
 
 def build_detections(frame: int) -> list[list[float]]:
     rows: list[list[float]] = []
-    for _name, x, y, occluded in TRACKS_SPEC:
-        if frame in occluded:
+    for _name, x, y, first_frame, occluded in TRACKS_SPEC:
+        if frame < first_frame or frame in occluded:
             continue
         rows.append([x, y, x + BOX, y + BOX, SCORE])
     return rows
@@ -202,8 +229,14 @@ def main() -> None:
             "twin_offset": TWIN_OFFSET,
             "twin_iou": 0.923,
             "tracks_spec": [
-                {"name": n, "x": x, "y": y, "occluded_frames_0indexed": oc}
-                for (n, x, y, oc) in TRACKS_SPEC
+                {
+                    "name": n,
+                    "x": x,
+                    "y": y,
+                    "first_frame_0indexed": ff,
+                    "occluded_frames_0indexed": oc,
+                }
+                for (n, x, y, ff, oc) in TRACKS_SPEC
             ],
         },
         "frames": frames,

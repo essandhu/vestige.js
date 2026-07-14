@@ -40,8 +40,7 @@ const det = (): Detection => ({ bbox: BOX, score: 0.9 });
  */
 function runGap(gap: number, trackBuffer?: number): { onReturn: number[]; afterReturn: number[] } {
   // Default maxAge = floor(30 / 30 * 30) = 30.
-  const tracker =
-    trackBuffer === undefined ? new ByteTracker() : new ByteTracker({ trackBuffer });
+  const tracker = trackBuffer === undefined ? new ByteTracker() : new ByteTracker({ trackBuffer });
   for (let i = 0; i < 5; i++) tracker.update([det()]); // born frame 1, matched through frame 5
   for (let i = 0; i < gap; i++) tracker.update([]);
   const onReturn = tracker.update([det()]).map((t) => t.id);

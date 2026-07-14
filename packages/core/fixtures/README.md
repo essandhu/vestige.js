@@ -45,6 +45,7 @@ external reference repo) document their setup in their per-fixture README.
 | `lsap-scipy-ties/` | `tests/validation/lsap-scipy-ties.test.ts` — `solveLsap` tie-breaking vs. `scipy.optimize.linear_sum_assignment` | none |
 | `detection-noise/` | `tests/validation/detection-noise-fixture.test.ts` — all three trackers under realistic detector noise (σ=4px) | all three reference clones (see ADR-0007) |
 | `ocsort-giou-byte/` | `tests/validation/ocsort-giou-byte-fixture.test.ts` — OC-SORT's `asoFunc: 'giou'` + `useByte: true` paths | clone `noahcao/OC_SORT` (see ADR-0007) |
+| `bytetrack-dedup/` | `tests/validation/bytetrack-dedup-fixture.test.ts` — ByteTrack's `remove_duplicate_stracks`, which needs two tracks overlapping at IoU > 0.85 | clone `FoundationVision/ByteTrack` (see ADR-0003 §7) |
 
 The three per-tracker fixtures above use well-separated boxes, so every cost matrix
 they build has an unambiguous optimum — and under those conditions all three
