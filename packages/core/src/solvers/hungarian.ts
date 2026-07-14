@@ -86,7 +86,16 @@ export function solveLsap(cost: Float64Array, m: number, n: number): LsapResult 
     for (let j = 0; j < ni; j++) {
       shortestPathCosts[j] = Number.POSITIVE_INFINITY;
       path[j] = -1;
-      remaining[j] = j;
+      // REVERSE fill, matching scipy's `_lsap.cpp` (`remaining[it] = nc - it - 1`).
+      // This is load-bearing, not cosmetic. The Dijkstra scan below walks
+      // `remaining` in order and keeps the first strict minimum, so the fill order
+      // decides every TIE — and a forward fill inverts scipy's choice on all of
+      // them. `solveLsap` backs both the trackers and the eval metrics' internal
+      // gt↔prediction matching, and TrackEval matches with
+      // `scipy.optimize.linear_sum_assignment`; IDF1 in particular assigns over
+      // INTEGER match counts, where ties are routine and the choice moves
+      // IDTP/IDFP/IDFN directly. See ADR-0006.
+      remaining[j] = ni - j - 1;
       SC[j] = 0;
     }
     for (let i = 0; i < mi; i++) SR[i] = 0;

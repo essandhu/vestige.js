@@ -55,8 +55,20 @@ describe('clearMot', () => {
   it('counts misses, false positives, and fragmentations', () => {
     // 1 gt × 4 frames. Tracker: match f1, nothing f2, match f3 + a far
     // spurious box, match f4. TP = 3, FN = 1 (f2), FP = 1 (spurious),
-    // IDSW = 0 (same id resumes), Frag = 1 (gap f2 with later re-match).
-    // MOTA = 1 - (1 + 1 + 0)/4 = 0.5. Ratio 3/4 = 0.75 → PT.
+    // IDSW = 0 (same id resumes). MOTA = 1 - (1 + 1 + 0)/4 = 0.5. Ratio 3/4 = 0.75 → PT.
+    //
+    // Frag = 0, NOT 1. This expectation used to read 1, which is what you get by
+    // reasoning "the track had a gap, so it fragmented" — and it is wrong. Frame 2 has
+    // ZERO tracker detections, and TrackEval `clear.py:70-76` `continue`s past an empty
+    // timestep BEFORE resetting `prev_timestep_tracker_id`. So gt 7 is still considered
+    // "previously tracked" when the match resumes on f3, and no new segment is counted.
+    // Verified directly against TrackEval on this exact sequence, which reports
+    // Frag = 0 (and the same TP/FN/FP/IDSW/MOTA as below).
+    //
+    // The old value encoded the very bug the fix removed — this test passed against a
+    // metric that invented a fragment after every detector dropout. Pinned properly now
+    // by `tests/validation/trackeval-metrics-fixture.test.ts` (`empty-tracker-frame`).
+    // See ADR-0006.
     const b = box(0, 0, 10, 10);
     const far = box(500, 500, 10, 10);
     const frames = [
@@ -77,7 +89,7 @@ describe('clearMot', () => {
     expect(r.fn).toBe(1);
     expect(r.fp).toBe(1);
     expect(r.idsw).toBe(0);
-    expect(r.frag).toBe(1);
+    expect(r.frag).toBe(0);
     expect(r.mota).toBeCloseTo(0.5, 12);
     expect(r.motp).toBe(1);
     expect(r.mt).toBe(0);
@@ -134,14 +146,23 @@ describe('clearMot', () => {
   });
 
   it('counts an identity switch across an unmatched gap', () => {
-    // 1 gt × 3 frames: id 1 at f1, nothing at f2, id 2 at f3. The last-ever
-    // matched id (1) persists across the gap, so the f3 match is a switch.
-    // TP = 2, FN = 1, IDSW = 1, Frag = 1; MOTA = 1 - (1 + 0 + 1)/3 = 1/3.
+    // 1 gt × 3 frames: id 1 at f1, nothing at f2, id 2 at f3. The last-ever matched id
+    // (1) persists across the gap, so the f3 match IS a switch.
+    // TP = 2, FN = 1, IDSW = 1, Frag = 0; MOTA = 1 - (1 + 0 + 1)/3 = 1/3.
+    //
+    // Note the asymmetry, which is the whole subtlety of TrackEval's bookkeeping and is
+    // easy to get backwards: IDSW is scored off `prev_tracker_id` (the last-ever matched
+    // id, which survives ANY gap), while Frag and the matching continuity bonus are
+    // driven by `prev_timestep_tracker_id` (the immediately-previous frame). An empty
+    // timestep is `continue`d past without resetting EITHER, so the switch is still
+    // counted (1) but no new segment is (0). Frag used to read 1 here — that was the
+    // wiped-continuity bug, verified against TrackEval on this exact sequence. See
+    // ADR-0006.
     const r = clearMot(singleObjectSequence([1, null, 2]));
     expect(r.tp).toBe(2);
     expect(r.fn).toBe(1);
     expect(r.idsw).toBe(1);
-    expect(r.frag).toBe(1);
+    expect(r.frag).toBe(0);
     expect(r.mota).toBeCloseTo(1 / 3, 12);
   });
 

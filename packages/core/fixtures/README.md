@@ -42,6 +42,7 @@ external reference repo) document their setup in their per-fixture README.
 | `sort-abewley/` | `tests/validation/sort-abewley-fixture.test.ts` — cross-implementation faithfulness vs. `abewley/sort` | clone `abewley/sort` at the pinned commit (see fixture README) |
 | `bytetrack-foundationvision/` | `tests/validation/bytetrack-foundationvision-fixture.test.ts` — cross-implementation faithfulness vs. `FoundationVision/ByteTrack` | clone `FoundationVision/ByteTrack` at the pinned commit, plus `lapx` + `cython_bbox` (see fixture README) |
 | `association-crowded/` | `tests/validation/association-crowded-fixture.test.ts` — association semantics under **competition**, for all three trackers at once | all three reference clones (see ADR-0005) |
+| `lsap-scipy-ties/` | `tests/validation/lsap-scipy-ties.test.ts` — `solveLsap` tie-breaking vs. `scipy.optimize.linear_sum_assignment` | none |
 
 The three per-tracker fixtures above use well-separated boxes, so every cost matrix
 they build has an unambiguous optimum — and under those conditions all three

@@ -61,7 +61,15 @@ export function identity(
     for (let i = 0; i < frame.gt.length; i++) {
       const gtId = frame.gt[i] ?? 0;
       for (let j = 0; j < n; j++) {
-        if ((frame.sim[i * n + j] ?? 0) >= threshold - Number.EPSILON) {
+        // Bare `>=`, with NO epsilon slack — deliberately unlike `clearmot.ts`, which
+        // subtracts one. TrackEval is internally inconsistent here and we match it
+        // metric-for-metric: `identity.py:55` is
+        // `np.greater_equal(similarity_scores, self.threshold)`, while `clear.py:82` is
+        // `score_mat[similarity < self.threshold - np.finfo('float').eps] = 0`. The
+        // window between the two is ~1 ULP, so this cannot move a real benchmark
+        // number — but "our IDF1 rounds a boundary case the other way from TrackEval"
+        // is not a sentence worth ever having to write.
+        if ((frame.sim[i * n + j] ?? 0) >= threshold) {
           const pair = gtId * numTr + (frame.track[j] ?? 0);
           overlap[pair] = (overlap[pair] ?? 0) + 1;
         }
